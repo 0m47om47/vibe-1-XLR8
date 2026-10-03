@@ -1,6 +1,6 @@
 'use client';
 
-import { useDemo } from '@/lib/demo-state';
+import { useApp } from '@/lib/app-state';
 import { CheckCircle, AlertTriangle, XCircle, Info, X } from 'lucide-react';
 
 const ICONS = {
@@ -25,21 +25,26 @@ const ICON_COLORS = {
 };
 
 export default function ToastContainer() {
-  const { toasts, removeToast } = useDemo();
+  const { toasts, removeToast } = useApp();
 
   return (
-    <div className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 lg:left-auto lg:translate-x-0 lg:right-6 z-[100] flex flex-col gap-3 pointer-events-none w-[calc(100%-32px)] sm:w-auto">
+    <div
+      className="fixed bottom-20 lg:bottom-6 left-1/2 -translate-x-1/2 lg:left-auto lg:translate-x-0 lg:right-6 z-[100] flex flex-col gap-3 pointer-events-none w-[calc(100%-32px)] sm:w-auto"
+      aria-live="polite"
+    >
       {toasts.map((toast) => {
         const Icon = ICONS[toast.type];
         return (
           <div
             key={toast.id}
+            role={toast.type === 'error' ? 'alert' : 'status'}
             className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg toast-enter w-full sm:min-w-[320px] sm:max-w-[420px] ${COLORS[toast.type]}`}
           >
             <Icon className={`w-5 h-5 flex-shrink-0 ${ICON_COLORS[toast.type]}`} />
             <span className="text-sm font-medium flex-1">{toast.message}</span>
             <button
               onClick={() => removeToast(toast.id)}
+              aria-label="Dismiss"
               className="p-0.5 rounded-md hover:bg-black/5 transition-colors cursor-pointer flex-shrink-0"
             >
               <X className="w-4 h-4" />

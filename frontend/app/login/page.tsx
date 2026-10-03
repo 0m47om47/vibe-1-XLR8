@@ -1,192 +1,171 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useDemo } from '@/lib/demo-state';
-import { Role } from '@/lib/types';
-import { Car, ArrowRight, GraduationCap, Briefcase } from 'lucide-react';
+import { Suspense, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { homeFor, useApp } from '@/lib/app-state';
+import { ApiError, errorMessage } from '@/lib/api';
+import { validateEmail } from '@/lib/validation';
+import { Car, ArrowRight, GraduationCap, Briefcase, AlertCircle } from 'lucide-react';
 import Button from '@/components/ui/Button';
+import AuthShell, { AuthField } from '@/components/layout/AuthShell';
+import { PageLoader } from '@/components/ui/PageState';
 
-export default function LoginPage() {
+/** Seeded demo accounts (backend `npm run seed`). Password for all: password123. */
+const DEMO_ACCOUNTS = [
+  { label: 'Student', hint: 'Rahul', email: 'rahul@lawazia.test', icon: GraduationCap },
+  { label: 'Employee', hint: 'Neha', email: 'neha@lawazia.test', icon: Briefcase },
+  { label: 'Rider', hint: 'Ravi', email: 'rider@lawazia.test', icon: Car },
+];
+const DEMO_PASSWORD = 'password123';
+
+function LoginForm() {
   const router = useRouter();
-  const { login } = useDemo();
+  const params = useSearchParams();
+  const { user, login } = useApp();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [errors, setErrors] = useState<{ email?: string; password?: string; form?: string }>({});
+  const [loading, setLoading] = useState<string | null>(null);
 
-  const handleLogin = (role: Role) => {
-    login(role);
-    if (role === 'rider') {
-      router.push('/rider');
-    } else {
-      router.push('/dashboard');
+  /** Only same-site paths are honoured for ?next= (no open redirects). */
+  const nextPath = (() => {
+    const next = params.get('next');
+    return next && next.startsWith('/') && !next.startsWith('//') ? next : null;
+  })();
+
+  // Already logged in → go straight to the app.
+  useEffect(() => {
+    if (user) router.replace(nextPath ?? homeFor(user.role));
+  }, [user, router, nextPath]);
+
+  const signIn = async (mail: string, pass: string, key: string) => {
+    const emailError = validateEmail(mail);
+    const nextErrors = { email: emailError ?? undefined, password: pass ? undefined : 'Password is required' };
+    setErrors(nextErrors);
+    if (nextErrors.email || nextErrors.password) return;
+
+    setLoading(key);
+    try {
+      await login(mail.trim(), pass);
+      // The effect above redirects once `user` is set.
+    } catch (err) {
+      setErrors(
+        err instanceof ApiError && err.status === 401
+          ? { form: 'Incorrect email or password.' }
+          : { form: errorMessage(err) },
+      );
+      setLoading(null);
     }
   };
 
+  if (user) return <PageLoader label="Signing you in…" />;
+
   return (
-    <div className="min-h-screen flex page-enter">
-      {/* Left — Brand */}
-      <div className="hidden lg:flex lg:w-[55%] bg-gray-900 relative overflow-hidden flex-col justify-between p-12 xl:p-16">
-        {/* Subtle gradient overlay */}
-        <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900" />
-        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-blue-600/5 rounded-full blur-3xl" />
-        <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-amber-500/5 rounded-full blur-3xl" />
+    <AuthShell>
+      {/* Login card */}
+      <form
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          signIn(email, password, 'form');
+        }}
+        className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm"
+      >
+        <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Welcome back</h2>
+        <p className="text-gray-500 text-sm mt-1.5 mb-8">Sign in to continue to your Toto desk.</p>
 
-        <div className="relative z-10">
-          <div className="flex items-center gap-3 mb-16">
-            <div className="w-10 h-10 bg-amber-400/20 rounded-xl flex items-center justify-center">
-              <Car className="w-5 h-5 text-amber-400" />
-            </div>
-            <div>
-              <span className="text-white font-bold text-lg tracking-tight">LAWAZIA</span>
-              <span className="text-gray-500 text-xs font-semibold tracking-widest ml-2 uppercase">
-                Toto Desk
-              </span>
-            </div>
+        {errors.form && (
+          <div role="alert" className="flex items-start gap-2 mb-5 px-3 py-2.5 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700">
+            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            {errors.form}
           </div>
+        )}
 
-          <h1 className="text-5xl xl:text-6xl font-bold text-white leading-tight tracking-tight">
-            Your ride.
-            <br />
-            <span className="text-gray-400">Handled simply.</span>
-          </h1>
-
-          <p className="text-gray-400 text-lg mt-6 max-w-md leading-relaxed">
-            Request, manage and record every Toto trip from one place.
-          </p>
+        <div className="space-y-4 mb-6">
+          <AuthField
+            label="Email"
+            name="email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@lawazia.com"
+            error={errors.email}
+          />
+          <AuthField
+            label="Password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+            error={errors.password}
+          />
         </div>
 
-        {/* Route visualization */}
-        <div className="relative z-10">
-          <div className="flex flex-col gap-0">
-            {/* College */}
-            <div className="flex items-center gap-4">
-              <div className="w-3 h-3 rounded-full bg-blue-400 ring-4 ring-blue-400/20" />
-              <span className="text-gray-300 text-sm font-medium uppercase tracking-wide">
-                College
-              </span>
-            </div>
-            <div className="w-px h-10 bg-gray-700 ml-[5px] relative">
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gray-800 p-1.5 rounded-full border border-gray-700">
-                <Car className="w-3.5 h-3.5 text-amber-400" />
-              </div>
-            </div>
-            {/* Station */}
-            <div className="flex items-center gap-4">
-              <div className="w-3 h-3 rounded-full bg-amber-400 ring-4 ring-amber-400/20" />
-              <span className="text-gray-300 text-sm font-medium uppercase tracking-wide">
-                Station
-              </span>
-            </div>
-            <div className="w-px h-10 bg-gray-700 ml-[5px]" />
-            {/* Office */}
-            <div className="flex items-center gap-4">
-              <div className="w-3 h-3 rounded-full bg-green-400 ring-4 ring-green-400/20" />
-              <span className="text-gray-300 text-sm font-medium uppercase tracking-wide">
-                Office
-              </span>
-            </div>
-          </div>
+        <Button
+          type="submit"
+          className="w-full"
+          size="lg"
+          loading={loading === 'form'}
+          disabled={loading !== null}
+          icon={<ArrowRight className="w-4 h-4" />}
+        >
+          Sign In
+        </Button>
+
+        <p className="text-sm text-gray-500 text-center mt-6">
+          New here?{' '}
+          <Link href="/register" className="text-blue-600 hover:text-blue-700 font-medium">
+            Create an account
+          </Link>
+        </p>
+      </form>
+
+      {/* Demo access — real logins with the seeded accounts */}
+      <div className="mt-8">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="h-px flex-1 bg-gray-200" />
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">Demo Access</span>
+          <div className="h-px flex-1 bg-gray-200" />
         </div>
-      </div>
 
-      {/* Right — Login */}
-      <div className="flex-1 flex items-center justify-center p-6 lg:p-12 bg-[#F7F8FA]">
-        <div className="w-full max-w-[400px]">
-          {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-3 mb-10">
-            <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center">
-              <Car className="w-5 h-5 text-amber-600" />
-            </div>
-            <div>
-              <span className="font-bold text-lg tracking-tight">LAWAZIA</span>
-              <span className="text-gray-400 text-xs font-semibold tracking-widest ml-2 uppercase">
-                Toto Desk
-              </span>
-            </div>
-          </div>
-
-          {/* Login card */}
-          <div className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm">
-            <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Welcome back</h2>
-            <p className="text-gray-500 text-sm mt-1.5 mb-8">
-              Sign in to continue to your Toto desk.
-            </p>
-
-            <div className="space-y-4 mb-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@lawazia.com"
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all placeholder:text-gray-300"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all placeholder:text-gray-300"
-                />
-              </div>
-            </div>
-
-            <Button
-              className="w-full"
-              size="lg"
-              onClick={() => handleLogin('student')}
-              icon={<ArrowRight className="w-4 h-4" />}
+        <div className="grid grid-cols-3 gap-3">
+          {DEMO_ACCOUNTS.map((acc) => (
+            <button
+              key={acc.email}
+              type="button"
+              disabled={loading !== null}
+              onClick={() => {
+                setEmail(acc.email);
+                setPassword(DEMO_PASSWORD);
+                signIn(acc.email, DEMO_PASSWORD, acc.email);
+              }}
+              className="flex flex-col items-center gap-1.5 p-4 bg-white border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Sign In
-            </Button>
-          </div>
-
-          {/* Demo access */}
-          <div className="mt-8">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="h-px flex-1 bg-gray-200" />
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">
-                Demo Access
+              <acc.icon className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
+              <span className="text-xs font-medium text-gray-600 group-hover:text-blue-700 transition-colors">
+                {acc.label}
               </span>
-              <div className="h-px flex-1 bg-gray-200" />
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <button
-                onClick={() => handleLogin('student')}
-                className="flex flex-col items-center gap-2 p-4 bg-white border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all cursor-pointer group"
-              >
-                <GraduationCap className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
-                <span className="text-xs font-medium text-gray-600 group-hover:text-blue-700 transition-colors">
-                  Student
-                </span>
-              </button>
-              <button
-                onClick={() => handleLogin('employee')}
-                className="flex flex-col items-center gap-2 p-4 bg-white border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all cursor-pointer group"
-              >
-                <Briefcase className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
-                <span className="text-xs font-medium text-gray-600 group-hover:text-blue-700 transition-colors">
-                  Employee
-                </span>
-              </button>
-              <button
-                onClick={() => handleLogin('rider')}
-                className="flex flex-col items-center gap-2 p-4 bg-white border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all cursor-pointer group"
-              >
-                <Car className="w-5 h-5 text-gray-400 group-hover:text-blue-600 transition-colors" />
-                <span className="text-xs font-medium text-gray-600 group-hover:text-blue-700 transition-colors">
-                  Rider
-                </span>
-              </button>
-            </div>
-          </div>
+              <span className="text-[10px] text-gray-400">{loading === acc.email ? 'Signing in…' : acc.hint}</span>
+            </button>
+          ))}
         </div>
+        <p className="text-[11px] text-gray-400 text-center mt-3">
+          Seeded demo accounts · password <span className="font-mono">{DEMO_PASSWORD}</span>
+        </p>
       </div>
-    </div>
+    </AuthShell>
+  );
+}
+
+export default function LoginPage() {
+  // useSearchParams needs a Suspense boundary for static rendering.
+  return (
+    <Suspense fallback={<PageLoader />}>
+      <LoginForm />
+    </Suspense>
   );
 }

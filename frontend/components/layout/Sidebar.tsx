@@ -1,21 +1,20 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { useDemo, useCurrentUser } from '@/lib/demo-state';
+import { useApp, useCurrentUser } from '@/lib/app-state';
 import {
   LayoutDashboard,
   PlusCircle,
   MapPin,
   Gauge,
   History,
-  Settings,
+  ListChecks,
   LogOut,
   Car,
-  Menu,
   X,
   MoreHorizontal,
 } from 'lucide-react';
-import { cn, getInitials } from '@/lib/utils';
+import { cn, getInitials, roleLabel } from '@/lib/utils';
 import { useState } from 'react';
 
 interface NavItem {
@@ -27,6 +26,7 @@ interface NavItem {
 const PASSENGER_ITEMS: NavItem[] = [
   { label: 'Overview', icon: LayoutDashboard, href: '/dashboard' },
   { label: 'Request Ride', icon: PlusCircle, href: '/request' },
+  { label: 'My Requests', icon: ListChecks, href: '/requests' },
   { label: 'My Trips', icon: MapPin, href: '/my-trips' },
 ];
 
@@ -38,14 +38,23 @@ const RIDER_ITEMS: NavItem[] = [
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { currentRole, logout } = useDemo();
+  const { logout } = useApp();
   const user = useCurrentUser();
+  const isRider = user.role === 'RIDER';
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const isActive = (href: string) => {
     if (href === '/dashboard') return pathname === '/dashboard';
-    if (href === '/rider') return pathname === '/rider' && !pathname.startsWith('/rider/history');
+    if (href === '/rider') return pathname === '/rider' || pathname.startsWith('/rider/active');
+    if (href === '/request') return pathname === '/request';
+    if (href === '/requests') return pathname === '/requests' || pathname.startsWith('/rides/');
     return pathname.startsWith(href);
+  };
+
+  const handleLogout = async () => {
+    setMobileMenuOpen(false);
+    await logout();
+    router.replace('/login');
   };
 
   const navigate = (href: string) => {
@@ -53,19 +62,19 @@ export default function Sidebar() {
     setMobileMenuOpen(false);
   };
 
-  const primaryItems = currentRole === 'rider' ? RIDER_ITEMS : PASSENGER_ITEMS;
-  const secondaryItems = currentRole === 'rider' ? PASSENGER_ITEMS : RIDER_ITEMS;
+  // Role-based navigation: each role only sees its own screens.
+  const primaryItems = isRider ? RIDER_ITEMS : PASSENGER_ITEMS;
 
   // Mobile bottom nav items (max 4 + more)
-  const mobileBottomItems = currentRole === 'rider'
+  const mobileBottomItems = isRider
     ? [
         { label: 'Desk', icon: Gauge, href: '/rider' },
         { label: 'History', icon: History, href: '/rider/history' },
-        { label: 'Overview', icon: LayoutDashboard, href: '/dashboard' },
       ]
     : [
         { label: 'Home', icon: LayoutDashboard, href: '/dashboard' },
         { label: 'Request', icon: PlusCircle, href: '/request' },
+        { label: 'Requests', icon: ListChecks, href: '/requests' },
         { label: 'Trips', icon: MapPin, href: '/my-trips' },
       ];
 
@@ -109,26 +118,6 @@ export default function Sidebar() {
             );
           })}
 
-          <div className="!my-4 h-px bg-gray-100 mx-1" />
-
-          {secondaryItems.map((item) => {
-            const active = isActive(item.href);
-            return (
-              <button
-                key={item.href}
-                onClick={() => navigate(item.href)}
-                className={cn(
-                  'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 cursor-pointer',
-                  active
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
-                )}
-              >
-                <item.icon className={cn('w-[18px] h-[18px]', active ? 'text-blue-600' : 'text-gray-400')} />
-                {item.label}
-              </button>
-            );
-          })}
         </nav>
 
         {/* Bottom user section */}
@@ -143,19 +132,15 @@ export default function Sidebar() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-gray-900 truncate">{user.name}</p>
-              <p className="text-xs text-gray-400 capitalize">{user.role}</p>
+              <p className="text-xs text-gray-400">{roleLabel(user.role)}</p>
             </div>
           </div>
-          <div className="flex gap-1 mt-2">
-            <button className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer">
-              <Settings className="w-3.5 h-3.5" />
-              Settings
-            </button>
+          <div className="mt-2">
             <button
-              onClick={() => { logout(); router.push('/login'); }}
-              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+              onClick={handleLogout}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors cursor-pointer"
             >
-              <LogOut className="w-3.5 h-3.5" />
+              <LogOut className="w-[18px] h-[18px]" />
               Logout
             </button>
           </div>
@@ -180,6 +165,7 @@ export default function Sidebar() {
           {/* More menu button */}
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            aria-label="Menu"
             className="p-2 rounded-lg hover:bg-gray-100 transition-colors text-gray-500 cursor-pointer"
           >
             {mobileMenuOpen ? <X className="w-5 h-5" /> : <MoreHorizontal className="w-5 h-5" />}
@@ -199,7 +185,7 @@ export default function Sidebar() {
           />
           <div className="lg:hidden fixed top-14 left-0 right-0 bg-white border-b border-gray-200 shadow-lg z-50 modal-enter">
             <nav className="p-3 space-y-1">
-              {[...primaryItems, ...secondaryItems].map((item) => {
+              {primaryItems.map((item) => {
                 const active = isActive(item.href);
                 return (
                   <button
@@ -230,12 +216,12 @@ export default function Sidebar() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-gray-900">{user.name}</p>
-                  <p className="text-xs text-gray-400 capitalize">{user.role}</p>
+                  <p className="text-xs text-gray-400">{roleLabel(user.role)}</p>
                 </div>
               </div>
 
               <button
-                onClick={() => { logout(); router.push('/login'); setMobileMenuOpen(false); }}
+                onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-600 hover:bg-red-50 transition-all cursor-pointer"
               >
                 <LogOut className="w-5 h-5" />

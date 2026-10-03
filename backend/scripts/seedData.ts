@@ -26,6 +26,12 @@ function at(dayOffset: number, hh: number, mm = 0): Date {
   return d;
 }
 
+/** `date`, but never later than `hoursAgo` hours before now (seeded history must be in the past). */
+function notAfterNow(date: Date, hoursAgo: number): Date {
+  const latest = Date.now() - hoursAgo * 3600_000;
+  return date.getTime() > latest ? new Date(latest) : date;
+}
+
 /**
  * Wipes the app's collections and inserts a demo dataset:
  *  - completed trip with BOARDED and MISSED passengers (yesterday)
@@ -97,7 +103,7 @@ export async function seed(db: Db): Promise<{ users: Record<string, UserDoc> }> 
       clashedWithTripId: null,
       statusReason: null,
       cancelledAt: null,
-      createdAt: new Date(scheduledAt.getTime() - 24 * 3600_000),
+      createdAt: notAfterNow(new Date(scheduledAt.getTime() - 24 * 3600_000), 2),
       updatedAt: now,
       ...extra,
     };
@@ -129,11 +135,11 @@ export async function seed(db: Db): Promise<{ users: Record<string, UserDoc> }> 
         };
       }),
       status,
-      acceptedAt: new Date(request.scheduledAt.getTime() - 12 * 3600_000),
+      acceptedAt: notAfterNow(new Date(request.scheduledAt.getTime() - 12 * 3600_000), 1),
       startedAt: started,
       completedAt: completed,
       cancelledAt: null,
-      createdAt: new Date(request.scheduledAt.getTime() - 12 * 3600_000),
+      createdAt: notAfterNow(new Date(request.scheduledAt.getTime() - 12 * 3600_000), 1),
       updatedAt: now,
     };
     request.tripId = trip._id;

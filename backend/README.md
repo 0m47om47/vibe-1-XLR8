@@ -113,6 +113,7 @@ Auth is a `toto_session` HTTP-only cookie set by login/register. Dates are ISO-8
 | `POST /api/auth/login` | public | `{ email, password }` | 200 `{ user }` + cookie |
 | `POST /api/auth/logout` | any | — | Deletes the server session, clears the cookie |
 | `GET /api/auth/me` | any logged-in | — | `{ user }` |
+| `GET /api/auth/session` | public | — | `{ user }` or `{ user: null }` (always 200), so the UI can check login without a 401 |
 
 ### Ride requests
 
@@ -120,7 +121,7 @@ Auth is a `toto_session` HTTP-only cookie set by login/register. Dates are ISO-8
 |---|---|---|---|
 | `POST /api/requests` | STUDENT, EMPLOYEE | `{ from, to, scheduledAt, passengers: [{ name }] }` | 201 `{ request, clashed }`. `status` is `PENDING`, or `CLASHED` if the Toto is already booked then |
 | `GET /api/requests` | any | `?status=&upcoming=true&limit=` | `{ requests }`. Students/employees see their own; the rider sees all |
-| `GET /api/requests/:id` | owner or RIDER | — | `{ request, trip }`. `trip` includes per-passenger boarding |
+| `GET /api/requests/:id` | owner, a listed passenger, or RIDER | — | `{ request, trip }`. `trip` includes per-passenger boarding |
 | `POST /api/requests/:id/cancel` | owner | — | `{ request }`. Allowed while `PENDING`, or `ACCEPTED` and not started (also cancels the trip and frees the Toto) |
 | `POST /api/requests/:id/accept` | RIDER | — | 200 `{ request, trip, clashedRequestIds }` or **409 `TRIP_CLASH`** (the request is now `CLASHED`) |
 

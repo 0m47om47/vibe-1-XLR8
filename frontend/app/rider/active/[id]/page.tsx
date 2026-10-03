@@ -2,213 +2,255 @@
 
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { useDemo } from '@/lib/demo-state';
+import { useApp } from '@/lib/app-state';
+import { api, ApiError, errorMessage } from '@/lib/api';
+import { useApiData } from '@/lib/use-api';
+import type { Trip } from '@/lib/types';
 import AppLayout from '@/components/layout/AppLayout';
 import StatusBadge from '@/components/ui/StatusBadge';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import RouteVisualization from '@/components/rides/RouteVisualization';
 import PassengerRow from '@/components/rides/PassengerRow';
-import { formatRoute, formatDateFull, isToday } from '@/lib/utils';
-import { ArrowLeft, Check, Users, UserCheck, UserX, AlertCircle, Car } from 'lucide-react';
+import { ErrorState, PageLoader } from '@/components/ui/PageState';
+import { formatRoute, formatDateFull, formatDayLabel, formatStamp, formatTime, shortId } from '@/lib/utils';
+import { ArrowLeft, ArrowRight, Check, Users, UserCheck, UserX, AlertCircle } from 'lucide-react';
 
 export default function ActiveTripPage() {
+  return (
+    <AppLayout allow="RIDER">
+      <ActiveTrip />
+    </AppLayout>
+  );
+}
+
+function ActiveTrip() {
   const params = useParams();
   const router = useRouter();
-  const { rideRequests, updatePassengerStatus, completeTrip } = useDemo();
+  const { addToast } = useApp();
+  const tripId = params.id as string;
+  const { data, error, loading, reload, setData } = useApiData<{ trip: Trip }>(`/trips/${tripId}`);
   const [showComplete, setShowComplete] = useState(false);
-  const [completed, setCompleted] = useState(false);
+  const [justCompleted, setJustCompleted] = useState(false);
+  const [busyPassenger, setBusyPassenger] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
 
-  const rideId = params.id as string;
-  const ride = rideRequests.find((r) => r.id === rideId);
-
-  if (!ride) {
+  if (error && !data) {
     return (
-      <AppLayout>
-        <div className="page-enter text-center py-20">
-          <p className="text-gray-500">Trip not found</p>
-          <Button variant="secondary" className="mt-4" onClick={() => router.push('/rider')}>
-            Back to Rider Desk
-          </Button>
-        </div>
-      </AppLayout>
+      <div className="page-enter">
+        <BackToDesk onClick={() => router.push('/rider')} />
+        <ErrorState message={error.status === 404 ? 'Trip not found.' : errorMessage(error)} onRetry={error.status === 404 ? undefined : reload} />
+      </div>
     );
   }
+  if (loading && !data) return <PageLoader />;
+  if (!data) return null;
 
-  const boardedCount = ride.passengers.filter((p) => p.status === 'BOARDED').length;
-  const missedCount = ride.passengers.filter((p) => p.status === 'MISSED').length;
-  const pendingCount = ride.passengers.filter((p) => p.status === 'PENDING').length;
-  const allHandled = pendingCount === 0;
+  const trip = data.trip;
+  const { boarded: boardedCount, missed: missedCount, pending: pendingCount } = trip.boarding;
+  const inProgress = trip.status === 'IN_PROGRESS';
 
-  const handleComplete = () => {
-    completeTrip(rideId);
-    setShowComplete(false);
-    setCompleted(true);
+  const handleStart = async () => {
+    setWorking(true);
+    try {
+      const res = await api.post<{ trip: Trip }>(`/trips/${trip.id}/start`);
+      setData(res);
+      addToast('info', 'Trip started — mark passengers as they board.');
+    } catch (err) {
+      addToast('error', errorMessage(err));
+      reload();
+    } finally {
+      setWorking(false);
+    }
   };
 
-  if (completed || ride.status === 'COMPLETED') {
+  const updatePassenger = async (passengerId: string, boardingStatus: 'BOARDED' | 'MISSED') => {
+    setBusyPassenger(passengerId);
+    try {
+      const res = await api.patch<{ trip: Trip }>(`/trips/${trip.id}/passengers/${passengerId}`, { boardingStatus });
+      setData(res);
+      const name = res.trip.passengers.find((p) => p.id === passengerId)?.name ?? 'Passenger';
+      addToast(boardingStatus === 'BOARDED' ? 'success' : 'error', `${name} marked as ${boardingStatus === 'BOARDED' ? 'boarded' : 'missed'}`);
+    } catch (err) {
+      addToast('error', errorMessage(err));
+      reload();
+    } finally {
+      setBusyPassenger(null);
+    }
+  };
+
+  const handleComplete = async () => {
+    setWorking(true);
+    try {
+      const res = await api.post<{ trip: Trip }>(`/trips/${trip.id}/complete`);
+      setData(res);
+      setShowComplete(false);
+      setJustCompleted(true);
+      addToast('success', 'Trip completed — the Toto is available again.');
+    } catch (err) {
+      const pending = err instanceof ApiError ? (err.details as { pendingPassengers?: string[] } | undefined)?.pendingPassengers : undefined;
+      addToast('error', pending?.length ? `Still pending: ${pending.join(', ')}` : errorMessage(err));
+      setShowComplete(false);
+      reload();
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  if (justCompleted) {
     return (
-      <AppLayout>
-        <div className="flex items-center justify-center min-h-[60vh] page-enter">
-          <div className="text-center max-w-sm">
-            <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-5 check-enter">
-              <Check className="w-8 h-8 text-green-600" />
-            </div>
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Trip completed</h2>
-            <p className="text-gray-500 text-sm mb-8">
-              Toto is now available for the next ride.
-            </p>
-            <Button onClick={() => router.push('/rider')}>
-              Back to Rider Desk
+      <div className="flex items-center justify-center min-h-[60vh] page-enter">
+        <div className="text-center max-w-sm">
+          <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-5 check-enter">
+            <Check className="w-8 h-8 text-green-600" />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Trip completed</h2>
+          <p className="text-gray-500 text-sm mb-2">Toto is now available for the next ride.</p>
+          <p className="text-sm mb-8">
+            <span className="text-green-600 font-semibold">{boardedCount} boarded</span>
+            <span className="text-gray-300"> · </span>
+            <span className="text-red-600 font-semibold">{missedCount} missed</span>
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Button onClick={() => router.push('/rider')}>Back to Rider Desk</Button>
+            <Button variant="secondary" onClick={() => setJustCompleted(false)}>
+              View Trip Record
             </Button>
           </div>
         </div>
-      </AppLayout>
+      </div>
     );
   }
 
+  const label =
+    trip.status === 'IN_PROGRESS' ? 'Active Trip' : trip.status === 'ACCEPTED' ? 'Upcoming Trip' : 'Trip Record';
+
   return (
-    <AppLayout>
-      <div className="page-enter">
-        {/* Header */}
-        <div className="flex items-center gap-3 sm:gap-4 mb-2">
-          <button
-            onClick={() => router.push('/rider')}
-            className="p-2 rounded-xl hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-            Rider Desk
-          </span>
+    <div className="page-enter">
+      {/* Header */}
+      <BackToDesk onClick={() => router.push('/rider')} />
+
+      <div className="flex items-center gap-2 sm:gap-3 mb-1">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md">
+          {label}
+        </span>
+        <StatusBadge status={trip.status} size="md" />
+      </div>
+
+      <h1 className="text-xl sm:text-2xl lg:text-[28px] font-bold text-gray-900 tracking-tight mb-1">
+        {formatRoute(trip.from, trip.to)}
+      </h1>
+      <p className="text-xs sm:text-sm text-gray-500 mb-6 sm:mb-8">
+        {formatTime(trip.scheduledAt)} • {formatDayLabel(trip.scheduledAt)} · {formatDateFull(trip.scheduledAt)}
+      </p>
+
+      {trip.status === 'ACCEPTED' && (
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 sm:p-5 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-blue-800">Ready for pickup</p>
+            <p className="text-xs sm:text-sm text-blue-700">
+              {trip.canStart
+                ? 'Start the trip when you begin picking passengers up.'
+                : 'Another trip is in progress. Complete it before starting this one.'}
+            </p>
+          </div>
+          <Button onClick={handleStart} loading={working} disabled={!trip.canStart} icon={<ArrowRight className="w-4 h-4" />}>
+            Start Trip
+          </Button>
         </div>
+      )}
 
-        <div className="flex items-center gap-2 sm:gap-3 mb-1">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md">
-            Active Trip
-          </span>
-          <StatusBadge status="IN_PROGRESS" size="md" />
+      {trip.status === 'CANCELLED' && (
+        <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 sm:p-5 mb-6">
+          <p className="text-sm font-semibold text-gray-700">Cancelled by the requester</p>
+          <p className="text-xs sm:text-sm text-gray-500">This booking no longer holds the Toto.</p>
         </div>
+      )}
 
-        <h1 className="text-xl sm:text-2xl lg:text-[28px] font-bold text-gray-900 tracking-tight mb-1">
-          {formatRoute(ride.from, ride.to)}
-        </h1>
-        <p className="text-xs sm:text-sm text-gray-500 mb-6 sm:mb-8">
-          {ride.time} • {isToday(ride.date) ? 'Today' : ''} {formatDateFull(ride.date)}
-        </p>
+      {trip.status === 'COMPLETED' && (
+        <div className="rounded-2xl border border-green-200 bg-green-50 p-4 sm:p-5 mb-6">
+          <p className="text-sm font-semibold text-green-800">Completed {formatStamp(trip.completedAt, '')}</p>
+          <p className="text-xs sm:text-sm text-green-700">Boarding records are final and kept in history.</p>
+        </div>
+      )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6">
-          {/* Main */}
-          <div className="lg:col-span-2 space-y-5 sm:space-y-6">
-            {/* Route */}
-            <div className="bg-white border border-gray-200 rounded-2xl p-5 sm:p-6 flex items-center justify-center">
-              <RouteVisualization from={ride.from} to={ride.to} size="lg" />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6">
+        {/* Main */}
+        <div className="lg:col-span-2 space-y-5 sm:space-y-6">
+          {/* Route */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-5 sm:p-6 flex items-center justify-center">
+            <RouteVisualization from={trip.from} to={trip.to} size="lg" />
+          </div>
+
+          {/* Pickup Checklist */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-6">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-base sm:text-lg font-semibold text-gray-900">Pickup Checklist</h3>
+              {inProgress && pendingCount > 0 && <span className="text-xs text-gray-400">{pendingCount} remaining</span>}
+            </div>
+            <p className="text-xs sm:text-sm text-gray-500 mb-4 sm:mb-6">
+              {inProgress
+                ? 'Mark each passenger as Boarded or Missed. You can change a mark until the trip is completed.'
+                : trip.status === 'ACCEPTED'
+                  ? 'Start the trip to mark passengers.'
+                  : 'Final boarding status for each passenger.'}
+            </p>
+
+            <div className="space-y-1">
+              {trip.passengers.map((p, i) => (
+                <PassengerRow
+                  key={p.id}
+                  passenger={p}
+                  index={i}
+                  showControls={inProgress}
+                  busy={busyPassenger === p.id}
+                  disabled={busyPassenger !== null || working}
+                  onBoard={(id) => updatePassenger(id, 'BOARDED')}
+                  onMiss={(id) => updatePassenger(id, 'MISSED')}
+                />
+              ))}
             </div>
 
-            {/* Pickup Checklist */}
-            <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-6">
-              <div className="flex items-center justify-between mb-1">
-                <h3 className="text-base sm:text-lg font-semibold text-gray-900">Pickup Checklist</h3>
-                {!allHandled && (
-                  <span className="text-xs text-gray-400">{pendingCount} remaining</span>
-                )}
-              </div>
-              <p className="text-xs sm:text-sm text-gray-500 mb-4 sm:mb-6">
-                Mark each passenger as they board.
-              </p>
-
-              <div className="space-y-1">
-                {ride.passengers.map((p, i) => (
-                  <PassengerRow
-                    key={p.id}
-                    passenger={p}
-                    index={i}
-                    showControls
-                    onBoard={(id) => updatePassengerStatus(rideId, id, 'BOARDED')}
-                    onMiss={(id) => updatePassengerStatus(rideId, id, 'MISSED')}
-                  />
-                ))}
-              </div>
-
-              {/* Complete button */}
+            {/* Complete button */}
+            {inProgress && (
               <div className="mt-5 sm:mt-6 pt-4 border-t border-gray-100">
                 <Button
                   onClick={() => setShowComplete(true)}
-                  disabled={!allHandled}
+                  disabled={!trip.canComplete || busyPassenger !== null}
                   className="w-full"
                   size="lg"
-                  icon={allHandled ? <Check className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                  icon={trip.canComplete ? <Check className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
                 >
-                  {allHandled ? 'Complete Trip' : `${pendingCount} passenger${pendingCount !== 1 ? 's' : ''} pending`}
+                  {trip.canComplete ? 'Complete Trip' : `${pendingCount} passenger${pendingCount !== 1 ? 's' : ''} pending`}
                 </Button>
               </div>
+            )}
+          </div>
+        </div>
+
+        {/* Sidebar — Live Summary */}
+        <div className="space-y-6">
+          <div className="bg-white border border-gray-200 rounded-2xl p-6">
+            <h3 className="text-base font-semibold text-gray-900 mb-5">Pickup Summary</h3>
+
+            <div className="space-y-4">
+              <SummaryLine icon={<UserCheck className="w-4 h-4 text-green-600" />} tint="bg-green-50" label="Boarded" value={boardedCount} color="text-green-600" />
+              <SummaryLine icon={<UserX className="w-4 h-4 text-red-600" />} tint="bg-red-50" label="Missed" value={missedCount} color="text-red-600" />
+              <div className="h-px bg-gray-100" />
+              <SummaryLine icon={<Users className="w-4 h-4 text-gray-500" />} tint="bg-gray-50" label="Total" value={trip.passengers.length} color="text-gray-900" />
             </div>
           </div>
 
-          {/* Sidebar — Live Summary */}
-          <div className="space-y-6">
-            {/* Pickup Summary */}
-            <div className="bg-white border border-gray-200 rounded-2xl p-6">
-              <h3 className="text-base font-semibold text-gray-900 mb-5">Pickup Summary</h3>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center">
-                      <UserCheck className="w-4 h-4 text-green-600" />
-                    </div>
-                    <span className="text-sm text-gray-600">Boarded</span>
-                  </div>
-                  <span className="text-2xl font-bold text-green-600">{boardedCount}</span>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center">
-                      <UserX className="w-4 h-4 text-red-600" />
-                    </div>
-                    <span className="text-sm text-gray-600">Missed</span>
-                  </div>
-                  <span className="text-2xl font-bold text-red-600">{missedCount}</span>
-                </div>
-
-                <div className="h-px bg-gray-100" />
-
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center">
-                      <Users className="w-4 h-4 text-gray-500" />
-                    </div>
-                    <span className="text-sm text-gray-600">Total</span>
-                  </div>
-                  <span className="text-2xl font-bold text-gray-900">{ride.passengers.length}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Trip Info */}
-            <div className="bg-white border border-gray-200 rounded-2xl p-6">
-              <h3 className="text-base font-semibold text-gray-900 mb-4">Trip Info</h3>
-              <div className="space-y-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Ride ID</span>
-                  <span className="font-medium text-gray-900">{ride.id}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Requested by</span>
-                  <span className="font-medium text-gray-900">{ride.requestedByName}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Created</span>
-                  <span className="font-medium text-gray-900">{ride.createdAt}</span>
-                </div>
-                {ride.acceptedAt && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Accepted</span>
-                    <span className="font-medium text-gray-900">{ride.acceptedAt}</span>
-                  </div>
-                )}
-              </div>
+          {/* Trip Info */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-6">
+            <h3 className="text-base font-semibold text-gray-900 mb-4">Trip Info</h3>
+            <div className="space-y-3 text-sm">
+              <InfoLine label="Trip ID" value={`#${shortId(trip.id)}`} />
+              <InfoLine label="Requested by" value={trip.requester.name} />
+              <InfoLine label="Rider" value={trip.rider.name} />
+              <InfoLine label="Accepted" value={formatStamp(trip.acceptedAt)} />
+              {trip.startedAt && <InfoLine label="Started" value={formatStamp(trip.startedAt)} />}
+              {trip.completedAt && <InfoLine label="Completed" value={formatStamp(trip.completedAt)} />}
             </div>
           </div>
         </div>
@@ -217,13 +259,15 @@ export default function ActiveTripPage() {
       {/* Complete Trip Modal */}
       <Modal
         open={showComplete}
-        onClose={() => setShowComplete(false)}
+        onClose={() => !working && setShowComplete(false)}
         title="Complete this trip?"
-        subtitle="All passenger boarding statuses have been recorded."
+        subtitle="Boarding records become final and the Toto is released."
         actions={
           <>
-            <Button variant="secondary" onClick={() => setShowComplete(false)}>Cancel</Button>
-            <Button onClick={handleComplete} icon={<Check className="w-4 h-4" />}>
+            <Button variant="secondary" onClick={() => setShowComplete(false)} disabled={working}>
+              Cancel
+            </Button>
+            <Button onClick={handleComplete} loading={working} icon={<Check className="w-4 h-4" />}>
               Complete Trip
             </Button>
           </>
@@ -232,7 +276,7 @@ export default function ActiveTripPage() {
         <div className="bg-gray-50 rounded-xl p-4 space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-gray-500">Passengers</span>
-            <span className="font-semibold text-gray-900">{ride.passengers.length}</span>
+            <span className="font-semibold text-gray-900">{trip.passengers.length}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-gray-500">Boarded</span>
@@ -244,6 +288,42 @@ export default function ActiveTripPage() {
           </div>
         </div>
       </Modal>
-    </AppLayout>
+    </div>
+  );
+}
+
+function BackToDesk({ onClick }: { onClick: () => void }) {
+  return (
+    <div className="flex items-center gap-3 sm:gap-4 mb-2">
+      <button
+        onClick={onClick}
+        aria-label="Back to Rider Desk"
+        className="p-2 rounded-xl hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
+      >
+        <ArrowLeft className="w-5 h-5" />
+      </button>
+      <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Rider Desk</span>
+    </div>
+  );
+}
+
+function SummaryLine({ icon, tint, label, value, color }: { icon: React.ReactNode; tint: string; label: string; value: number; color: string }) {
+  return (
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <div className={`w-8 h-8 rounded-lg ${tint} flex items-center justify-center`}>{icon}</div>
+        <span className="text-sm text-gray-600">{label}</span>
+      </div>
+      <span className={`text-2xl font-bold ${color}`}>{value}</span>
+    </div>
+  );
+}
+
+function InfoLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className="text-gray-500">{label}</span>
+      <span className="font-medium text-gray-900 text-right">{value}</span>
+    </div>
   );
 }

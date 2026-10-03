@@ -16,11 +16,11 @@
   --danger-light: #FEF2F2;
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+/*
+ * No global `* { margin: 0; padding: 0 }` reset here: Tailwind's preflight already
+ * does it inside @layer base. An unlayered reset would beat every Tailwind
+ * utility (they live in @layer utilities) and strip all p-/m- spacing.
+ */
 
 body {
   background: var(--bg);

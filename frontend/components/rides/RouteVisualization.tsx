@@ -2,7 +2,7 @@
 
 import { Location } from '@/lib/types';
 import { getLocationLabel } from '@/lib/utils';
-import { MapPin, Car } from 'lucide-react';
+import { Car } from 'lucide-react';
 
 interface RouteVisualizationProps {
   from: Location;

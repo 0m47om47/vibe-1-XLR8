@@ -79,11 +79,20 @@ export async function listRideRequests(user: CurrentUser, opts: ListRequestsOpti
   return docs.map((d) => toRequestDTO(d, now));
 }
 
+/**
+ * Visible to the rider, the requester, and anyone listed as a passenger (so a
+ * passenger can open a trip from their history). Others get 404, not 403, so
+ * ids cannot be probed.
+ */
 async function loadVisibleRequest(user: CurrentUser, id: ObjectId): Promise<RideRequestDoc> {
   const { rideRequests } = await db();
   const doc = await rideRequests.findOne({ _id: id });
-  // Someone else's request answers 404, not 403, so ids cannot be probed.
-  if (!doc || (user.role !== "RIDER" && !doc.requesterId.equals(user._id))) throw notFound("Ride request");
+  const visible =
+    doc &&
+    (user.role === "RIDER" ||
+      doc.requesterId.equals(user._id) ||
+      doc.passengers.some((p) => p.userId?.equals(user._id) || p.nameKey === user.nameKey));
+  if (!visible) throw notFound("Ride request");
   return doc;
 }
 

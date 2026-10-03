@@ -113,6 +113,12 @@ async function run(mongoUri: string, dbName: string) {
     check("GET /me returns the logged-in user", me.status === 200 && me.body.data.user.name === "Rahul", me);
     check("user payload never contains a password hash", !JSON.stringify(me.body).includes("passwordHash"));
 
+    const sessionIn = await rahul.get("/api/auth/session");
+    const sessionOut = await anon.get("/api/auth/session");
+    check("GET /session → user when logged in, { user: null } (200) when not",
+      sessionIn.status === 200 && sessionIn.body.data.user?.name === "Rahul" && sessionOut.status === 200 && sessionOut.body.data.user === null,
+      [sessionIn, sessionOut]);
+
     const bad = await anon.post("/api/auth/login", { email: "rahul@lawazia.test", password: "wrong-password" });
     check("wrong password → 401", bad.status === 401, bad);
 
@@ -387,6 +393,9 @@ async function run(mongoUri: string, dbName: string) {
     const seeded = await priya.get("/api/history/person");
     check("Priya's history also includes the seeded MISSED trip (requested by Rahul)",
       seeded.body.data.entries.filter((x: any) => x.boardingStatus === "MISSED").length >= 2, seeded.body.data.summary);
+    const asPassenger = await priya.get(`/api/requests/${demoReq1}`);
+    check("a listed passenger (not the requester) can open the ride from history",
+      asPassenger.status === 200 && asPassenger.body.data.trip?.passengers.some((p: any) => p.name === "Priya" && p.boardingStatus === "MISSED"), asPassenger);
     const snoop = await rahul.get("/api/history/person?name=Priya");
     check("student cannot read another person's history → 400", snoop.status === 400, snoop);
   }

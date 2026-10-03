@@ -1,22 +1,38 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useDemo } from '@/lib/demo-state';
+import { usePathname, useRouter } from 'next/navigation';
+import { homeFor, useApp } from '@/lib/app-state';
 import Sidebar from '@/components/layout/Sidebar';
 import ToastContainer from '@/components/ui/Toast';
+import { PageLoader } from '@/components/ui/PageState';
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { isLoggedIn } = useDemo();
+interface AppLayoutProps {
+  children: React.ReactNode;
+  /** Restrict the page to riders or to passengers (students/employees). */
+  allow?: 'RIDER' | 'PASSENGER';
+}
+
+/**
+ * Authenticated page shell. Waits for the session check, sends logged-out users
+ * to /login and wrong-role users to their own home. The backend enforces the
+ * same rules on every API call — this only keeps the UI coherent.
+ */
+export default function AppLayout({ children, allow }: AppLayoutProps) {
+  const { user } = useApp();
   const router = useRouter();
+  const pathname = usePathname();
+
+  const wrongRole =
+    !!user &&
+    ((allow === 'RIDER' && user.role !== 'RIDER') || (allow === 'PASSENGER' && user.role === 'RIDER'));
 
   useEffect(() => {
-    if (!isLoggedIn) {
-      router.replace('/login');
-    }
-  }, [isLoggedIn, router]);
+    if (user === null) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+    else if (user && wrongRole) router.replace(homeFor(user.role));
+  }, [user, wrongRole, router, pathname]);
 
-  if (!isLoggedIn) return null;
+  if (!user || wrongRole) return <PageLoader />;
 
   return (
     <div className="min-h-screen bg-[#F7F8FA]">
