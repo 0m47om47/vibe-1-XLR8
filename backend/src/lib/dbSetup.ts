@@ -5,6 +5,7 @@ import type { SessionDoc } from "@/models/Session";
 import type { VehicleDoc } from "@/models/Vehicle";
 import type { RideRequestDoc } from "@/models/RideRequest";
 import type { TripDoc } from "@/models/Trip";
+import type { RoleRequestDoc } from "@/models/RoleRequest";
 
 export type Collections = {
   users: Collection<UserDoc>;
@@ -12,6 +13,7 @@ export type Collections = {
   vehicles: Collection<VehicleDoc>;
   rideRequests: Collection<RideRequestDoc>;
   trips: Collection<TripDoc>;
+  roleRequests: Collection<RoleRequestDoc>;
 };
 
 export function collections(db: Db): Collections {
@@ -21,6 +23,7 @@ export function collections(db: Db): Collections {
     vehicles: db.collection<VehicleDoc>("vehicles"),
     rideRequests: db.collection<RideRequestDoc>("rideRequests"),
     trips: db.collection<TripDoc>("trips"),
+    roleRequests: db.collection<RoleRequestDoc>("roleRequests"),
   };
 }
 
@@ -31,7 +34,7 @@ export function collections(db: Db): Collections {
  */
 export async function ensureDatabase(db: Db): Promise<void> {
   const existing = new Set((await db.listCollections({}, { nameOnly: true }).toArray()).map((c) => c.name));
-  for (const name of ["users", "sessions", "vehicles", "rideRequests", "trips"]) {
+  for (const name of ["users", "sessions", "vehicles", "rideRequests", "trips", "roleRequests"]) {
     if (!existing.has(name)) {
       await db.createCollection(name).catch((err: { code?: number }) => {
         if (err?.code !== 48) throw err; // 48 = NamespaceExists (created concurrently)
@@ -80,6 +83,11 @@ export async function ensureDatabase(db: Db): Promise<void> {
         unique: true,
         partialFilterExpression: { status: "IN_PROGRESS" },
       },
+    ]),
+
+    c.roleRequests.createIndexes([
+      { key: { userId: 1, status: 1 }, name: "userId_status" },
+      { key: { status: 1, createdAt: -1 }, name: "status_createdAt" },
     ]),
   ]);
 

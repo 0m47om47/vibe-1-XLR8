@@ -28,6 +28,7 @@ let toastId = 0;
 
 /** Where each role lands after login. */
 export function homeFor(role: Role): string {
+  if (role === 'ADMIN') return '/admin';
   return role === 'RIDER' ? '/rider' : '/dashboard';
 }
 

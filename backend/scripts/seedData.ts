@@ -7,6 +7,7 @@ import { nameKey } from "../src/lib/validation";
 import type { UserDoc, UserRole } from "../src/models/User";
 import type { Location, RequestStatus, RideRequestDoc } from "../src/models/RideRequest";
 import type { BoardingStatus, TripDoc, TripStatus } from "../src/models/Trip";
+import type { RoleRequestDoc } from "../src/models/RoleRequest";
 
 export const DEMO_PASSWORD = "password123";
 
@@ -16,6 +17,7 @@ export const DEMO_USERS: { name: string; email: string; role: UserRole }[] = [
   { name: "Priya", email: "priya@lawazia.test", role: "STUDENT" },
   { name: "Amit", email: "amit@lawazia.test", role: "EMPLOYEE" },
   { name: "Neha", email: "neha@lawazia.test", role: "EMPLOYEE" },
+  { name: "Om Choubey", email: "admin@lawazia.test", role: "ADMIN" },
 ];
 
 /** A local date-time `dayOffset` days from today at hh:mm (server timezone). */
@@ -39,6 +41,7 @@ function notAfterNow(date: Date, hoursAgo: number): Date {
  *  - an upcoming ACCEPTED trip + a request that CLASHED with it
  *  - a CANCELLED request and a plain PENDING request
  *  - the exact live demo: Request 1 & Request 2, both PENDING at 10:00 tomorrow
+ *  - admin user + pending role requests for admin demo
  */
 export async function seed(db: Db): Promise<{ users: Record<string, UserDoc> }> {
   const c = collections(db);
@@ -48,6 +51,7 @@ export async function seed(db: Db): Promise<{ users: Record<string, UserDoc> }> 
     c.rideRequests.deleteMany({}),
     c.trips.deleteMany({}),
     c.vehicles.deleteMany({}),
+    c.roleRequests.deleteMany({}),
   ]);
   await ensureDatabase(db);
 
@@ -62,10 +66,13 @@ export async function seed(db: Db): Promise<{ users: Record<string, UserDoc> }> 
       email: u.email,
       passwordHash,
       role: u.role,
-      createdAt: now,
+      accountStatus: "ACTIVE",
+      createdAt: new Date(now.getTime() - Math.random() * 30 * 86400000), // Random join date within last 30 days
       updatedAt: now,
     };
-    users[u.name.split(" ")[0].toLowerCase()] = doc;
+    // Use first name lowercase as key, but handle "Om Choubey" specially
+    const key = u.name.includes(" ") ? u.name.split(" ")[0].toLowerCase() : u.name.toLowerCase();
+    users[key] = doc;
   }
   await c.users.insertMany(Object.values(users));
   const rider = users.ravi;
@@ -192,5 +199,43 @@ export async function seed(db: Db): Promise<{ users: Record<string, UserDoc> }> 
 
   await c.rideRequests.insertMany(requests);
   await c.trips.insertMany(trips);
+
+  // 7. Seed role requests — Rahul wants to become Employee (PENDING), Priya's was already approved
+  const roleRequests: RoleRequestDoc[] = [
+    {
+      _id: new ObjectId(),
+      userId: users.rahul._id,
+      userName: users.rahul.name,
+      userEmail: users.rahul.email,
+      currentRole: "STUDENT",
+      requestedRole: "EMPLOYEE",
+      reason: "Working with Lawazia as an employee.",
+      status: "PENDING",
+      reviewedBy: null,
+      reviewerName: null,
+      rejectionReason: null,
+      reviewedAt: null,
+      createdAt: new Date(now.getTime() - 2 * 3600_000), // 2 hours ago
+      updatedAt: new Date(now.getTime() - 2 * 3600_000),
+    },
+    {
+      _id: new ObjectId(),
+      userId: users.priya._id,
+      userName: users.priya.name,
+      userEmail: users.priya.email,
+      currentRole: "STUDENT",
+      requestedRole: "EMPLOYEE",
+      reason: "I am helping manage logistics at Lawazia.",
+      status: "APPROVED",
+      reviewedBy: users.om._id,
+      reviewerName: users.om.name,
+      rejectionReason: null,
+      reviewedAt: new Date(now.getTime() - 24 * 3600_000),
+      createdAt: new Date(now.getTime() - 48 * 3600_000),
+      updatedAt: new Date(now.getTime() - 24 * 3600_000),
+    },
+  ];
+  await c.roleRequests.insertMany(roleRequests);
+
   return { users };
 }

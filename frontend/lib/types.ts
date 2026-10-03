@@ -6,18 +6,38 @@
 export const LOCATIONS = ['College', 'Station', 'Office'] as const;
 export type Location = (typeof LOCATIONS)[number];
 
-export type Role = 'STUDENT' | 'EMPLOYEE' | 'RIDER';
+export type Role = 'STUDENT' | 'EMPLOYEE' | 'RIDER' | 'ADMIN';
 
 export type RequestStatus = 'PENDING' | 'ACCEPTED' | 'IN_PROGRESS' | 'COMPLETED' | 'CLASHED' | 'CANCELLED';
 export type TripStatus = 'ACCEPTED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
 export type BoardingStatus = 'PENDING' | 'BOARDED' | 'MISSED';
+export type AccountStatus = 'ACTIVE' | 'PENDING' | 'SUSPENDED';
+export type RoleRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 export interface User {
   id: string;
   name: string;
   email: string;
   role: Role;
+  accountStatus: AccountStatus;
   createdAt: string;
+}
+
+export interface RoleRequest {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  currentRole: Role;
+  requestedRole: Role;
+  reason: string | null;
+  status: RoleRequestStatus;
+  reviewedBy: string | null;
+  reviewerName: string | null;
+  rejectionReason: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface BoardingSummary {
