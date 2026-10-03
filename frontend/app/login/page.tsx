@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { homeFor, useApp } from '@/lib/app-state';
 import { ApiError, errorMessage } from '@/lib/api';
 import { validateEmail } from '@/lib/validation';
-import { Car, ArrowRight, GraduationCap, Briefcase, AlertCircle } from 'lucide-react';
+import { Car, ArrowRight, GraduationCap, Briefcase, AlertCircle, Shield } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import AuthShell, { AuthField } from '@/components/layout/AuthShell';
 import { PageLoader } from '@/components/ui/PageState';
@@ -16,6 +16,7 @@ const DEMO_ACCOUNTS = [
   { label: 'Student', hint: 'Rahul', email: 'rahul@lawazia.test', icon: GraduationCap },
   { label: 'Employee', hint: 'Neha', email: 'neha@lawazia.test', icon: Briefcase },
   { label: 'Rider', hint: 'Ravi', email: 'rider@lawazia.test', icon: Car },
+  { label: 'Admin', hint: 'Om', email: 'admin@lawazia.test', icon: Shield },
 ];
 const DEMO_PASSWORD = 'password123';
 
@@ -132,7 +133,7 @@ function LoginForm() {
           <div className="h-px flex-1 bg-gray-200" />
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {DEMO_ACCOUNTS.map((acc) => (
             <button
               key={acc.email}

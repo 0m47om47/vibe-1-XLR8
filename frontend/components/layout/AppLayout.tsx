@@ -9,8 +9,8 @@ import { PageLoader } from '@/components/ui/PageState';
 
 interface AppLayoutProps {
   children: React.ReactNode;
-  /** Restrict the page to riders or to passengers (students/employees). */
-  allow?: 'RIDER' | 'PASSENGER';
+  /** Restrict the page to riders, passengers (students/employees), or admins. */
+  allow?: 'RIDER' | 'PASSENGER' | 'ADMIN';
 }
 
 /**
@@ -25,7 +25,9 @@ export default function AppLayout({ children, allow }: AppLayoutProps) {
 
   const wrongRole =
     !!user &&
-    ((allow === 'RIDER' && user.role !== 'RIDER') || (allow === 'PASSENGER' && user.role === 'RIDER'));
+    ((allow === 'RIDER' && user.role !== 'RIDER') ||
+     (allow === 'PASSENGER' && (user.role === 'RIDER' || user.role === 'ADMIN')) ||
+     (allow === 'ADMIN' && user.role !== 'ADMIN'));
 
   useEffect(() => {
     if (user === null) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
@@ -47,3 +49,4 @@ export default function AppLayout({ children, allow }: AppLayoutProps) {
     </div>
   );
 }
+

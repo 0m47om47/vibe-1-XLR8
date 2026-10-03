@@ -15,6 +15,7 @@ export async function registerUser(input: RegisterInput): Promise<UserDoc> {
     email: input.email,
     passwordHash: await hashPassword(input.password),
     role: input.role,
+    accountStatus: "ACTIVE",
     createdAt: now,
     updatedAt: now,
   };

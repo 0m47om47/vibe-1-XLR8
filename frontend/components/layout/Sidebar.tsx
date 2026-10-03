@@ -13,6 +13,11 @@ import {
   Car,
   X,
   MoreHorizontal,
+  Users,
+  ShieldCheck,
+  Route,
+  UserCog,
+  Activity,
 } from 'lucide-react';
 import { cn, getInitials, roleLabel } from '@/lib/utils';
 import { useState } from 'react';
@@ -35,19 +40,37 @@ const RIDER_ITEMS: NavItem[] = [
   { label: 'Rider History', icon: History, href: '/rider/history' },
 ];
 
+const ADMIN_ITEMS: NavItem[] = [
+  { label: 'Overview', icon: LayoutDashboard, href: '/admin' },
+  { label: 'Users', icon: Users, href: '/admin/users' },
+  { label: 'Role Requests', icon: ShieldCheck, href: '/admin/role-requests' },
+  { label: 'Trips', icon: Route, href: '/admin/trips' },
+  { label: 'Rider History', icon: UserCog, href: '/admin/riders' },
+];
+
+const ADMIN_SECONDARY: NavItem[] = [
+  { label: 'Toto Status', icon: Activity, href: '/admin' },
+];
+
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useApp();
   const user = useCurrentUser();
   const isRider = user.role === 'RIDER';
+  const isAdmin = user.role === 'ADMIN';
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const isActive = (href: string) => {
     if (href === '/dashboard') return pathname === '/dashboard';
+    if (href === '/admin' && !pathname.startsWith('/admin/')) return pathname === '/admin';
     if (href === '/rider') return pathname === '/rider' || pathname.startsWith('/rider/active');
     if (href === '/request') return pathname === '/request';
     if (href === '/requests') return pathname === '/requests' || pathname.startsWith('/rides/');
+    if (href === '/admin/users') return pathname.startsWith('/admin/users');
+    if (href === '/admin/role-requests') return pathname.startsWith('/admin/role-requests');
+    if (href === '/admin/trips') return pathname.startsWith('/admin/trips');
+    if (href === '/admin/riders') return pathname.startsWith('/admin/riders');
     return pathname.startsWith(href);
   };
 
@@ -63,10 +86,17 @@ export default function Sidebar() {
   };
 
   // Role-based navigation: each role only sees its own screens.
-  const primaryItems = isRider ? RIDER_ITEMS : PASSENGER_ITEMS;
+  const primaryItems = isAdmin ? ADMIN_ITEMS : isRider ? RIDER_ITEMS : PASSENGER_ITEMS;
 
   // Mobile bottom nav items (max 4 + more)
-  const mobileBottomItems = isRider
+  const mobileBottomItems = isAdmin
+    ? [
+        { label: 'Overview', icon: LayoutDashboard, href: '/admin' },
+        { label: 'Users', icon: Users, href: '/admin/users' },
+        { label: 'Requests', icon: ShieldCheck, href: '/admin/role-requests' },
+        { label: 'Trips', icon: Route, href: '/admin/trips' },
+      ]
+    : isRider
     ? [
         { label: 'Desk', icon: Gauge, href: '/rider' },
         { label: 'History', icon: History, href: '/rider/history' },
