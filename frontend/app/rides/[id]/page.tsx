@@ -127,6 +127,8 @@ function RideDetail() {
               </span>
               <span className="text-gray-200 hidden sm:inline">•</span>
               <span>Requested by {isOwner ? 'you' : ride.requester.name}</span>
+              <span className="text-gray-200 hidden sm:inline">•</span>
+              <span>Arrives {ride.to} ~{formatTime(ride.endsAt)}</span>
               {trip && (
                 <>
                   <span className="text-gray-200 hidden sm:inline">•</span>
@@ -179,6 +181,13 @@ function RideDetail() {
                 />
               ))}
             </div>
+            {trip && trip.passengerTotal > passengers.length && (
+              <p className="text-xs sm:text-sm text-blue-700 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2 mt-3">
+                Shared run · {trip.passengerTotal - passengers.length} other passenger
+                {trip.passengerTotal - passengers.length !== 1 ? 's' : ''} from another request · {trip.seats.taken}/
+                {trip.seats.capacity} seats taken
+              </p>
+            )}
           </div>
         </div>
 

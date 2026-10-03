@@ -4,10 +4,13 @@ import { ok, parseObjectId, route, type IdParams } from "@/lib/http";
 import { acceptRideRequest } from "@/services/requestService";
 
 /**
- * POST /api/requests/:id/accept — rider reserves the Toto for this request.
- * 200 → accepted (trip created; overlapping pending requests are now CLASHED)
- * 409 → TRIP_CLASH: the Toto is already booked; this request is now CLASHED.
- * See lib/totoLock.ts for why two simultaneous accepts cannot both succeed.
+ * POST /api/requests/:id/accept — rider puts this request on the Toto.
+ * 200 → outcome NEW_TRIP (new run) or JOINED (shares an accepted run going the
+ *       same way at the same time); overlapping pending requests that no longer
+ *       fit are now CLASHED (`clashedRequestIds`).
+ * 409 → TRIP_CLASH: the Toto is busy on another run, or the run is full; this
+ *       request is now CLASHED and `message` says why.
+ * See lib/totoLock.ts for why simultaneous accepts cannot double-book or overfill.
  */
 export const POST = route<IdParams>(async (_req, { params }) => {
   const rider = await requireRider();
@@ -16,7 +19,7 @@ export const POST = route<IdParams>(async (_req, { params }) => {
 
   if (result.outcome === "CLASHED") {
     // The CLASHED status was committed before we report the conflict.
-    throw new ApiError(409, "TRIP_CLASH", "The Toto is already booked for an overlapping time", {
+    throw new ApiError(409, "TRIP_CLASH", result.reason, {
       requestStatus: "CLASHED",
       request: result.request,
       conflictingTripId: result.conflictingTripId,

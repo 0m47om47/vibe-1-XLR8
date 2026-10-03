@@ -1,18 +1,20 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useApp, useCurrentUser } from '@/lib/app-state';
 import { api, ApiError, errorMessage } from '@/lib/api';
 import { useApiData } from '@/lib/use-api';
-import { LOCATIONS, type Location, type Meta, type RideRequest } from '@/lib/types';
+import { LOCATIONS, type Location, type Meta, type RideRequest, type Schedule, type ScheduleEntry } from '@/lib/types';
 import { cleanName, toDateInput, toScheduledIso, validatePassengers, validateSchedule } from '@/lib/validation';
 import AppLayout from '@/components/layout/AppLayout';
 import TopHeader from '@/components/layout/TopHeader';
 import Button from '@/components/ui/Button';
 import StatusBadge from '@/components/ui/StatusBadge';
 import RouteVisualization from '@/components/rides/RouteVisualization';
-import { getLocationLabel, getInitials, formatDateFull, formatTime } from '@/lib/utils';
+import { SeatMeter, overlaps } from '@/components/rides/TotoSchedule';
+import { PageLoader } from '@/components/ui/PageState';
+import { getLocationLabel, getInitials, formatDateFull, formatRoute, formatTime } from '@/lib/utils';
 import {
   ArrowRight,
   ArrowLeft,
@@ -37,7 +39,13 @@ const TIMES = Array.from({ length: 56 }, (_, i) => {
   return { value, label };
 });
 
-const DEFAULT_META: Meta = { locations: [...LOCATIONS], tripDurationMinutes: 30, maxPassengers: 6, maxBookingDaysAhead: 60 };
+const DEFAULT_META: Meta = {
+  locations: [...LOCATIONS],
+  tripDurationMinutes: 15,
+  totoCapacity: 5,
+  maxPassengers: 5,
+  maxBookingDaysAhead: 60,
+};
 
 function tomorrow(): string {
   const d = new Date();
@@ -45,28 +53,54 @@ function tomorrow(): string {
   return toDateInput(d);
 }
 
+function toTimeInput(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+const isLocation = (v: string | null): v is Location => !!v && (LOCATIONS as readonly string[]).includes(v);
+
+/** What the Toto is doing in the chosen slot (display only — the server decides on submit). */
+type SlotStatus =
+  | { kind: 'free' }
+  | { kind: 'share'; entry: ScheduleEntry }
+  | { kind: 'full'; entry: ScheduleEntry }
+  | { kind: 'busy'; entry: ScheduleEntry };
+
 export default function RequestPage() {
   return (
     <AppLayout allow="PASSENGER">
-      <RequestWizard />
+      {/* useSearchParams (prefill from "Book seat") needs a Suspense boundary */}
+      <Suspense fallback={<PageLoader />}>
+        <RequestWizard />
+      </Suspense>
     </AppLayout>
   );
 }
 
 function RequestWizard() {
   const router = useRouter();
+  const params = useSearchParams();
   const user = useCurrentUser();
   const { addToast } = useApp();
   const meta = useApiData<Meta>('/meta').data ?? DEFAULT_META;
+  const schedule = useApiData<Schedule>('/schedule?days=60');
+
+  // Prefill from /request?from=College&to=Office&at=<ISO> (the schedule's "Book seat").
+  const prefillAt = params.get('at') ? new Date(params.get('at')!) : null;
+  const validPrefill = prefillAt && !Number.isNaN(prefillAt.getTime()) ? prefillAt : null;
+  const prefillFrom = params.get('from');
+  const prefillTo = params.get('to');
 
   const [step, setStep] = useState(1);
-  const [from, setFrom] = useState<Location>('College');
-  const [to, setTo] = useState<Location>('Station');
-  const [date, setDate] = useState(tomorrow);
-  const [time, setTime] = useState('10:00');
+  const [from, setFrom] = useState<Location>(isLocation(prefillFrom) ? prefillFrom : 'College');
+  const [to, setTo] = useState<Location>(isLocation(prefillTo) && prefillTo !== prefillFrom ? prefillTo : 'Station');
+  const [date, setDate] = useState(() => (validPrefill ? toDateInput(validPrefill) : tomorrow()));
+  const [time, setTime] = useState(() => (validPrefill ? toTimeInput(validPrefill) : '10:00'));
   const [passengers, setPassengers] = useState<string[]>([user.name, '']);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<RideRequest | null>(null);
+  /** Set when the request goes the same way at the same time as an accepted run with seats. */
+  const [sharesRun, setSharesRun] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [showRowErrors, setShowRowErrors] = useState(false);
@@ -120,14 +154,16 @@ function RequestWizard() {
     setSubmitting(true);
     setServerErrors({});
     try {
-      const data = await api.post<{ request: RideRequest; clashed: boolean }>('/requests', {
+      const data = await api.post<{ request: RideRequest; clashed: boolean; sharesTripId: string | null }>('/requests', {
         from,
         to,
         scheduledAt,
         passengers: filled.map((name) => ({ name })),
       });
       setResult(data.request);
+      setSharesRun(!!data.sharesTripId);
       if (data.clashed) addToast('warning', 'The Toto is already booked at that time — request marked as clashed.');
+      else if (data.sharesTripId) addToast('success', 'Request sent — it can share the Toto run already going that way.');
       else addToast('success', 'Ride request sent to the rider');
     } catch (err) {
       if (err instanceof ApiError && err.code === 'VALIDATION_ERROR') {
@@ -149,6 +185,7 @@ function RequestWizard() {
 
   const resetForm = () => {
     setResult(null);
+    setSharesRun(false);
     setStep(1);
     setPassengers([user.name, '']);
     setServerErrors({});
@@ -158,6 +195,19 @@ function RequestWizard() {
   const timeLabel = TIMES.find((t) => t.value === time)?.label ?? time;
   const scheduledIso = toScheduledIso(date, time);
   const passengerServerError = serverErrors.passengers;
+  const arrivalIso = scheduledIso
+    ? new Date(new Date(scheduledIso).getTime() + meta.tripDurationMinutes * 60_000).toISOString()
+    : null;
+
+  const slot: SlotStatus | null = (() => {
+    if (!scheduledIso || !arrivalIso || !schedule.data) return null;
+    const entry = schedule.data.entries.find((e) => overlaps(scheduledIso, arrivalIso, e.departAt, e.arriveAt));
+    if (!entry) return { kind: 'free' };
+    const sameRun = entry.from === from && entry.to === to && entry.departAt === scheduledIso;
+    if (sameRun) return entry.joinable ? { kind: 'share', entry } : { kind: 'full', entry };
+    return { kind: 'busy', entry };
+  })();
+  const seatsShort = slot?.kind === 'share' && filled.length > slot.entry.seats.left;
 
   if (result) {
     const clashed = result.status === 'CLASHED';
@@ -181,7 +231,9 @@ function RequestWizard() {
           <p className="text-gray-500 text-sm mb-3">
             {clashed
               ? result.statusReason ?? 'The Toto is already assigned for this time.'
-              : 'Your Toto request has been sent to the rider.'}
+              : sharesRun
+                ? 'The Toto is already going this way at this time. Once the rider confirms, you share that run.'
+                : 'Your Toto request has been sent to the rider.'}
           </p>
           <p className="text-xs text-gray-400 mb-3">
             {getLocationLabel(result.from)} → {getLocationLabel(result.to)} · {formatDateFull(result.scheduledAt)},{' '}
@@ -342,8 +394,63 @@ function RequestWizard() {
                   {scheduleError}
                 </p>
               )}
+
+              {/* Live view of the Toto in this slot */}
+              {!scheduleError && slot && (
+                <div
+                  role="status"
+                  className={`mt-4 rounded-xl border px-4 py-3 text-sm ${
+                    slot.kind === 'free'
+                      ? 'border-green-200 bg-green-50 text-green-800'
+                      : slot.kind === 'share'
+                        ? 'border-blue-200 bg-blue-50 text-blue-800'
+                        : 'border-amber-200 bg-amber-50 text-amber-800'
+                  }`}
+                >
+                  {slot.kind === 'free' && (
+                    <p>
+                      <span className="font-semibold">✓ The Toto is free at this time.</span> It would arrive at {to} around{' '}
+                      {arrivalIso && formatTime(arrivalIso)}.
+                    </p>
+                  )}
+                  {slot.kind === 'share' && (
+                    <>
+                      <p>
+                        <span className="font-semibold">The Toto is already going {formatRoute(from, to)} at {formatTime(slot.entry.departAt)}.</span>{' '}
+                        Your request will share this run once the rider adds it.
+                      </p>
+                      <SeatMeter seats={slot.entry.seats} className="mt-2" />
+                    </>
+                  )}
+                  {slot.kind === 'full' && (
+                    <p>
+                      <span className="font-semibold">⚠ This run is {slot.entry.status === 'IN_PROGRESS' ? 'already on its way' : 'full'}</span>{' '}
+                      ({slot.entry.seats.taken}/{slot.entry.seats.capacity} seats). Pick another time.
+                    </p>
+                  )}
+                  {slot.kind === 'busy' && (
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between">
+                      <p>
+                        <span className="font-semibold">⚠ The Toto is on another run</span> ({formatRoute(slot.entry.from, slot.entry.to)},{' '}
+                        {formatTime(slot.entry.departAt)}–{formatTime(slot.entry.arriveAt)}). This request would clash.
+                      </p>
+                      {TIMES.some((t) => t.value === toTimeInput(new Date(slot.entry.arriveAt))) &&
+                        toDateInput(new Date(slot.entry.arriveAt)) === date && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setTime(toTimeInput(new Date(slot.entry.arriveAt)))}
+                          >
+                            Try {formatTime(slot.entry.arriveAt)}
+                          </Button>
+                        )}
+                    </div>
+                  )}
+                </div>
+              )}
               <p className="text-xs text-gray-400 mt-4">
-                Each trip reserves the Toto for about {meta.tripDurationMinutes} minutes.
+                Each run takes about {meta.tripDurationMinutes} minutes. The Toto seats {meta.totoCapacity}; requests
+                going the same way at the same time share a run.
               </p>
             </div>
 
@@ -425,6 +532,12 @@ function RequestWizard() {
                   <Users className="w-4 h-4 inline mr-1.5 text-gray-400" />
                   {filled.length} passenger{filled.length !== 1 ? 's' : ''} · max {meta.maxPassengers}
                 </p>
+                {seatsShort && slot?.kind === 'share' && (
+                  <p className="text-sm text-amber-700 mt-2">
+                    ⚠ Only {slot.entry.seats.left} seat{slot.entry.seats.left !== 1 ? 's' : ''} left on the{' '}
+                    {formatTime(slot.entry.departAt)} run — this request would clash. Remove passengers or pick another time.
+                  </p>
+                )}
                 {(passengerServerError || (showRowErrors && filled.length === 0)) && (
                   <p className="text-sm text-red-600 mt-2">{passengerServerError ?? 'Add at least one passenger'}</p>
                 )}

@@ -173,6 +173,9 @@ function RiderHistoryView() {
                   meta={
                     <>
                       <span>{trip.boarding.total} pass.</span>
+                      {trip.requests.length > 1 && (
+                        <span className="text-blue-700 font-medium">Shared · {trip.requests.length} requests</span>
+                      )}
                       <span className="text-green-600 font-medium">✓ {trip.boarding.boarded} boarded</span>
                       {trip.boarding.missed > 0 && <span className="text-red-600 font-medium">✕ {trip.boarding.missed} missed</span>}
                     </>

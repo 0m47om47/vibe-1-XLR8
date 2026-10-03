@@ -4,7 +4,15 @@ import { config } from "@/lib/config";
 import { db } from "@/lib/db";
 import { conflict, forbidden, invalidState, notFound } from "@/lib/errors";
 import { withTotoReservation } from "@/lib/totoLock";
-import { toTripDTO, type BoardingStatus, type TripDTO, type TripDoc, type TripStatus } from "@/models/Trip";
+import {
+  toScheduleEntry,
+  toTripDTO,
+  type BoardingStatus,
+  type ScheduleEntryDTO,
+  type TripDTO,
+  type TripDoc,
+  type TripStatus,
+} from "@/models/Trip";
 import { toVehicleDTO, type VehicleDTO } from "@/models/Vehicle";
 
 async function isAnotherTripInProgress(excludeId?: ObjectId): Promise<boolean> {
@@ -30,22 +38,43 @@ function assertOwnedBy(trip: TripDoc | null, rider: CurrentUser): TripDoc {
 
 /**
  * Riders can view any trip of the Toto. Students/employees can view a trip only
- * if they requested it or are one of its passengers.
+ * if they requested a ride on it or are one of its passengers — and on a shared
+ * run they only see the passengers of their own request(s).
  */
 export async function getTrip(user: CurrentUser, id: ObjectId): Promise<TripDTO> {
   const { trips } = await db();
   const trip = await trips.findOne({ _id: id });
   if (!trip) throw notFound("Trip");
-  if (user.role !== "RIDER") {
-    const involved =
-      trip.requesterId.equals(user._id) ||
-      trip.passengers.some((p) => p.userId?.equals(user._id) || p.nameKey === user.nameKey);
-    if (!involved) throw notFound("Trip");
+  if (user.role === "RIDER") return tripDTO(trip);
+
+  const mine = new Set<string>();
+  for (const r of trip.requests) if (r.requesterId.equals(user._id)) mine.add(r.requestId.toHexString());
+  for (const p of trip.passengers) {
+    if (p.userId?.equals(user._id) || p.nameKey === user.nameKey) mine.add(p.requestId.toHexString());
   }
-  return tripDTO(trip);
+  if (mine.size === 0) throw notFound("Trip");
+  return toTripDTO(trip, { visibleRequestIds: trip.requests.filter((r) => mine.has(r.requestId.toHexString())).map((r) => r.requestId) });
 }
 
-export type ListTripsOptions = { status?: TripStatus; upcomingOnly?: boolean; limit: number };
+/**
+ * The Toto's upcoming runs for everyone: where it goes, when it leaves, when it
+ * arrives (so people at the destination know when it will be there) and how
+ * many seats are left. No passenger names.
+ */
+export async function getSchedule(days: number): Promise<{ capacity: number; entries: ScheduleEntryDTO[] }> {
+  const { trips } = await db();
+  const now = new Date();
+  const until = new Date(now.getTime() + days * 86_400_000);
+  const docs = await trips
+    .find(
+      { vehicleId: config.vehicleId, status: { $in: ["ACCEPTED", "IN_PROGRESS"] }, endsAt: { $gt: now }, scheduledAt: { $lt: until } },
+      { sort: { scheduledAt: 1 }, limit: 100 },
+    )
+    .toArray();
+  return { capacity: config.totoCapacity, entries: docs.map((d) => toScheduleEntry(d, now)) };
+}
+
+export type ListTripsOptions ={ status?: TripStatus; upcomingOnly?: boolean; limit: number };
 
 /** Trips operated by this rider. */
 export async function listRiderTrips(rider: CurrentUser, opts: ListTripsOptions): Promise<TripDTO[]> {
@@ -104,8 +133,9 @@ export async function startTrip(rider: CurrentUser, id: ObjectId): Promise<TripD
         { $set: { status: "IN_PROGRESS", startedAt: now, updatedAt: now } },
         { session, returnDocument: "after" },
       );
-      await rideRequests.updateOne(
-        { _id: trip.requestId },
+      // Every request sharing this run is now on the road.
+      await rideRequests.updateMany(
+        { _id: { $in: trip.requests.map((r) => r.requestId) }, status: "ACCEPTED" },
         { $set: { status: "IN_PROGRESS", updatedAt: now } },
         { session },
       );
@@ -200,8 +230,8 @@ export async function completeTrip(rider: CurrentUser, id: ObjectId): Promise<Tr
       });
     }
 
-    await rideRequests.updateOne(
-      { _id: after.requestId },
+    await rideRequests.updateMany(
+      { _id: { $in: after.requests.map((r) => r.requestId) }, status: "IN_PROGRESS" },
       { $set: { status: "COMPLETED", updatedAt: now } },
       { session },
     );

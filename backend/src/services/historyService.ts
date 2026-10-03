@@ -70,7 +70,6 @@ export async function getPersonHistory(
   const rows = await trips
     .aggregate<{
       _id: ObjectId;
-      requestId: ObjectId;
       passengers: TripDoc["passengers"][number];
       from: Location;
       to: Location;
@@ -78,7 +77,6 @@ export async function getPersonHistory(
       status: TripStatus;
       completedAt: Date | null;
       riderName: string;
-      requesterName: string;
     }>([
       { $match: tripFilter },
       { $sort: { scheduledAt: -1 } },
@@ -87,7 +85,6 @@ export async function getPersonHistory(
       { $limit: opts.limit },
       {
         $project: {
-          requestId: 1,
           passengers: 1,
           from: 1,
           to: 1,
@@ -95,7 +92,6 @@ export async function getPersonHistory(
           status: 1,
           completedAt: 1,
           riderName: 1,
-          requesterName: 1,
         },
       },
     ])
@@ -103,7 +99,8 @@ export async function getPersonHistory(
 
   const entries: PersonHistoryEntry[] = rows.map((r) => ({
     tripId: r._id.toHexString(),
-    requestId: r.requestId.toHexString(),
+    // On a shared run, the request this passenger was booked through.
+    requestId: r.passengers.requestId.toHexString(),
     passengerId: r.passengers._id.toHexString(),
     passengerName: r.passengers.name,
     from: r.from,
@@ -114,7 +111,7 @@ export async function getPersonHistory(
     tripStatus: r.status,
     completedAt: r.completedAt?.toISOString() ?? null,
     riderName: r.riderName,
-    requesterName: r.requesterName,
+    requesterName: r.passengers.requesterName,
   }));
 
   return {
@@ -126,13 +123,14 @@ export async function getPersonHistory(
 
 export type RiderHistoryEntry = {
   tripId: string;
-  requestId: string;
+  /** Requests sharing this run. */
+  requests: { requestId: string; requesterName: string; passengerCount: number }[];
   from: Location;
   to: Location;
   scheduledAt: string;
+  arriveAt: string;
   status: TripStatus;
-  requesterName: string;
-  passengers: { id: string; name: string; boardingStatus: BoardingStatus }[];
+  passengers: { id: string; name: string; requesterName: string; boardingStatus: BoardingStatus }[];
   boarding: BoardingSummary;
   startedAt: string | null;
   completedAt: string | null;
@@ -184,13 +182,22 @@ export async function getRiderHistory(
     totals: totalsRows[0] ?? { trips: 0, completed: 0, passengers: 0, boarded: 0, missed: 0 },
     entries: docs.map((t) => ({
       tripId: t._id.toHexString(),
-      requestId: t.requestId.toHexString(),
+      requests: t.requests.map((r) => ({
+        requestId: r.requestId.toHexString(),
+        requesterName: r.requesterName,
+        passengerCount: r.passengerCount,
+      })),
       from: t.from,
       to: t.to,
       scheduledAt: t.scheduledAt.toISOString(),
+      arriveAt: t.endsAt.toISOString(),
       status: t.status,
-      requesterName: t.requesterName,
-      passengers: t.passengers.map((p) => ({ id: p._id.toHexString(), name: p.name, boardingStatus: p.boardingStatus })),
+      passengers: t.passengers.map((p) => ({
+        id: p._id.toHexString(),
+        name: p.name,
+        requesterName: p.requesterName,
+        boardingStatus: p.boardingStatus,
+      })),
       boarding: summariseBoarding(t.passengers),
       startedAt: t.startedAt?.toISOString() ?? null,
       completedAt: t.completedAt?.toISOString() ?? null,

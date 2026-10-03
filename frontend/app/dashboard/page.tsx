@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useCurrentUser } from '@/lib/app-state';
 import { useApiData } from '@/lib/use-api';
 import { errorMessage } from '@/lib/api';
-import type { PassengerDashboard } from '@/lib/types';
+import type { PassengerDashboard, Schedule } from '@/lib/types';
+import TotoSchedule from '@/components/rides/TotoSchedule';
 import AppLayout from '@/components/layout/AppLayout';
 import TopHeader from '@/components/layout/TopHeader';
 import StatBlock from '@/components/ui/StatBlock';
@@ -13,7 +14,7 @@ import Button from '@/components/ui/Button';
 import RouteVisualization from '@/components/rides/RouteVisualization';
 import RideListRow from '@/components/rides/RideListRow';
 import EmptyState from '@/components/ui/EmptyState';
-import { ErrorState, PageLoader } from '@/components/ui/PageState';
+import { ErrorState, PageLoader, SkeletonRows } from '@/components/ui/PageState';
 import { formatDayLabel, formatDateFull, formatTime } from '@/lib/utils';
 import { Plus, Clock, CheckCircle, AlertTriangle, ArrowRight, Calendar, Hourglass } from 'lucide-react';
 
@@ -29,6 +30,7 @@ function Dashboard() {
   const router = useRouter();
   const user = useCurrentUser();
   const { data, error, loading, reload } = useApiData<PassengerDashboard>('/dashboard');
+  const schedule = useApiData<Schedule>('/schedule?days=7');
 
   const greeting = () => {
     const hour = new Date().getHours();
@@ -128,6 +130,31 @@ function Dashboard() {
               />
             </div>
           )}
+
+          {/* Toto schedule — shared with everyone: where it goes, when it arrives, free seats */}
+          <div className="bg-white border border-gray-200 rounded-2xl mb-6 sm:mb-8">
+            <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-gray-100">
+              <div>
+                <h2 className="text-base sm:text-lg font-semibold text-gray-900">Toto schedule</h2>
+                <p className="text-xs sm:text-sm text-gray-500">
+                  Runs with free seats can be shared — book a seat on the same run.
+                </p>
+              </div>
+            </div>
+            {schedule.data ? (
+              <TotoSchedule
+                entries={schedule.data.entries}
+                emptyText="The Toto has no runs booked this week."
+                onBook={(e) =>
+                  router.push(`/request?from=${e.from}&to=${e.to}&at=${encodeURIComponent(e.departAt)}`)
+                }
+              />
+            ) : schedule.error ? (
+              <p className="px-6 py-6 text-sm text-red-600">{errorMessage(schedule.error)}</p>
+            ) : (
+              <SkeletonRows rows={2} />
+            )}
+          </div>
 
           {/* Pending requests */}
           {data.pendingRequests.length > 0 && (

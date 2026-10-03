@@ -34,9 +34,10 @@ function notAfterNow(date: Date, hoursAgo: number): Date {
 
 /**
  * Wipes the app's collections and inserts a demo dataset:
- *  - completed trip with BOARDED and MISSED passengers (yesterday)
- *  - an older completed trip + the request that CLASHED with it
- *  - an upcoming ACCEPTED trip + a request that CLASHED with it
+ *  - a completed SHARED run (two requests) with BOARDED and MISSED passengers (yesterday)
+ *  - an older completed run + the request that CLASHED with it
+ *  - an upcoming run (14:00) with free seats, two PENDING requests that can join it,
+ *    and a different-route request that CLASHED with it
  *  - a CANCELLED request and a plain PENDING request
  *  - the exact live demo: Request 1 & Request 2, both PENDING at 10:00 tomorrow
  */
@@ -109,75 +110,96 @@ export async function seed(db: Db): Promise<{ users: Record<string, UserDoc> }> 
     };
   }
 
-  function makeTrip(request: RideRequestDoc, status: TripStatus, boarding: BoardingStatus[] = []): TripDoc {
-    const started = status === "IN_PROGRESS" || status === "COMPLETED" ? request.scheduledAt : null;
-    const completed = status === "COMPLETED" ? request.endsAt : null;
+  /** One run carrying one or more requests; `boarding[i][j]` = status of passenger j of request i. */
+  function makeTrip(reqs: RideRequestDoc[], status: TripStatus, boarding: BoardingStatus[][] = []): TripDoc {
+    const lead = reqs[0];
+    const started = status === "IN_PROGRESS" || status === "COMPLETED" ? lead.scheduledAt : null;
+    const completed = status === "COMPLETED" ? lead.endsAt : null;
+    const acceptedAt = notAfterNow(new Date(lead.scheduledAt.getTime() - 12 * 3600_000), 1);
     const trip: TripDoc = {
       _id: new ObjectId(),
       vehicleId: config.vehicleId,
-      requestId: request._id,
-      requesterId: request.requesterId,
-      requesterName: request.requesterName,
+      requests: reqs.map((r) => ({
+        requestId: r._id,
+        requesterId: r.requesterId,
+        requesterName: r.requesterName,
+        passengerCount: r.passengers.length,
+        joinedAt: acceptedAt,
+      })),
       riderId: rider._id,
       riderName: rider.name,
-      from: request.from,
-      to: request.to,
-      scheduledAt: request.scheduledAt,
-      endsAt: request.endsAt,
-      estimatedDurationMinutes: request.estimatedDurationMinutes,
-      passengers: request.passengers.map((p, i) => {
-        const s = boarding[i] ?? "PENDING";
-        return {
-          ...p,
-          boardingStatus: s,
-          boardedAt: s === "BOARDED" ? started : null,
-          statusUpdatedAt: s === "PENDING" ? null : started,
-        };
-      }),
+      from: lead.from,
+      to: lead.to,
+      scheduledAt: lead.scheduledAt,
+      endsAt: lead.endsAt,
+      estimatedDurationMinutes: lead.estimatedDurationMinutes,
+      capacity: config.totoCapacity,
+      passengers: reqs.flatMap((r, i) =>
+        r.passengers.map((p, j) => {
+          const s = boarding[i]?.[j] ?? "PENDING";
+          return {
+            ...p,
+            requestId: r._id,
+            requesterName: r.requesterName,
+            boardingStatus: s,
+            boardedAt: s === "BOARDED" ? started : null,
+            statusUpdatedAt: s === "PENDING" ? null : started,
+          };
+        }),
+      ),
       status,
-      acceptedAt: notAfterNow(new Date(request.scheduledAt.getTime() - 12 * 3600_000), 1),
+      acceptedAt,
       startedAt: started,
       completedAt: completed,
       cancelledAt: null,
-      createdAt: notAfterNow(new Date(request.scheduledAt.getTime() - 12 * 3600_000), 1),
+      createdAt: acceptedAt,
       updatedAt: now,
     };
-    request.tripId = trip._id;
+    for (const r of reqs) r.tripId = trip._id;
     return trip;
   }
 
   const requests: RideRequestDoc[] = [];
   const trips: TripDoc[] = [];
-  const clashReason = "Another trip was accepted for an overlapping time. The Toto can run only one trip at a time.";
+  const otherRun = (from: string, to: string) =>
+    `The Toto is booked for another run (${from} → ${to}) at that time. It can run only one trip at a time.`;
 
-  // 1. Two days ago: completed Office → College; Neha's overlapping request clashed with it.
+  // 1. Two days ago: completed Office → College; Neha's Office → Station request at the same time clashed.
   const r1 = makeRequest(users.amit, "Office", "College", at(-2, 17, 30), ["Amit", "Neha", "Rohit"], "COMPLETED");
-  trips.push(makeTrip(r1, "COMPLETED", ["BOARDED", "BOARDED", "MISSED"]));
-  const r1Clash = makeRequest(users.neha, "Office", "Station", at(-2, 17, 45), ["Neha"], "CLASHED", {
+  trips.push(makeTrip([r1], "COMPLETED", [["BOARDED", "BOARDED", "MISSED"]]));
+  const r1Clash = makeRequest(users.neha, "Office", "Station", at(-2, 17, 30), ["Neha"], "CLASHED", {
     clashedWithTripId: r1.tripId,
-    statusReason: clashReason,
+    statusReason: otherRun("Office", "College"),
   });
   requests.push(r1, r1Clash);
 
-  // 2. Yesterday: completed College → Station — Rahul & Amit BOARDED, Priya MISSED.
-  const r2 = makeRequest(users.rahul, "College", "Station", at(-1, 10), ["Rahul", "Amit", "Priya"], "COMPLETED");
-  trips.push(makeTrip(r2, "COMPLETED", ["BOARDED", "BOARDED", "MISSED"]));
-  requests.push(r2);
+  // 2. Yesterday 10:00: a SHARED College → Station run — Rahul's request (Rahul, Priya) + Amit's (Amit).
+  //    Rahul & Amit BOARDED, Priya MISSED.
+  const r2a = makeRequest(users.rahul, "College", "Station", at(-1, 10), ["Rahul", "Priya"], "COMPLETED");
+  const r2b = makeRequest(users.amit, "College", "Station", at(-1, 10), ["Amit"], "COMPLETED");
+  trips.push(makeTrip([r2a, r2b], "COMPLETED", [["BOARDED", "MISSED"], ["BOARDED"]]));
+  requests.push(r2a, r2b);
 
-  // 3. Live demo (tomorrow 10:00): both PENDING — accept one and the other becomes CLASHED.
+  // 3. Live demo (tomorrow 10:00): different routes at the same time — accept one, the other CLASHES.
   requests.push(
     makeRequest(users.rahul, "College", "Station", at(1, 10), ["Rahul", "Amit", "Priya"], "PENDING"),
     makeRequest(users.neha, "Office", "Station", at(1, 10), ["Neha", "Rohit"], "PENDING"),
   );
 
-  // 4. Tomorrow 14:00: an ACCEPTED trip, and Neha's 14:15 request that clashed with it.
-  const r4 = makeRequest(users.priya, "Station", "Office", at(1, 14), ["Priya"], "ACCEPTED");
-  trips.push(makeTrip(r4, "ACCEPTED"));
-  const r4Clash = makeRequest(users.neha, "College", "Office", at(1, 14, 15), ["Neha"], "CLASHED", {
-    clashedWithTripId: r4.tripId,
-    statusReason: clashReason,
-  });
-  requests.push(r4, r4Clash);
+  // 4. Pooling demo (tomorrow 14:00, College → Office, arrives Office ~14:15):
+  //    accepted run with Priya (1/5 seats); Amit (+Kiran) and Neha can still join it;
+  //    Rahul's Station → Office at 14:00 is a different run at the same time → CLASHED.
+  const r4 = makeRequest(users.priya, "College", "Office", at(1, 14), ["Priya"], "ACCEPTED");
+  trips.push(makeTrip([r4], "ACCEPTED"));
+  requests.push(
+    r4,
+    makeRequest(users.amit, "College", "Office", at(1, 14), ["Amit", "Kiran"], "PENDING"),
+    makeRequest(users.neha, "College", "Office", at(1, 14), ["Neha"], "PENDING"),
+    makeRequest(users.rahul, "Station", "Office", at(1, 14), ["Rahul"], "CLASHED", {
+      clashedWithTripId: r4.tripId,
+      statusReason: otherRun("College", "Office"),
+    }),
+  );
 
   // 5. Tomorrow 17:00: an ordinary PENDING request.
   requests.push(makeRequest(users.amit, "Office", "College", at(1, 17), ["Amit"], "PENDING"));

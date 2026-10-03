@@ -26,6 +26,7 @@ Run `typecheck` and `test:api` after any change to services, routes or lib. Neve
 ## Rules that must hold
 
 - **Booking changes go through `withTotoReservation()`.** Anything that creates, accepts, starts, cancels or completes a booking runs inside it. It writes the single `vehicles` doc first so MongoDB serialises those transactions; a plain transaction without that write allows double booking (write skew). The callback may run more than once, so it must only do DB writes via `session` and return a value.
+- **A trip is a run that several requests can share.** A request joins only if it has the same route and departure time, the run hasn't started, it fits `capacity`, and none of its passengers is already on it. The rule lives in `assessPooling()`. Never assume one request per trip: use `trip.requests[]`, and `passenger.requestId` / `requesterName`.
 - **Clash checks are server-side only**, using `findConflictingTrip` / `overlapFilter`. Overlap is half-open: `newStart < existingEnd && newEnd > existingStart`. Only `ACCEPTED` and `IN_PROGRESS` trips block.
 - **Losing an accept commits the request as `CLASHED`, then the route returns 409 `TRIP_CLASH`.** Return an outcome from the transaction; don't throw inside it, or the `CLASHED` write is rolled back.
 - **Keep request status in sync with its trip** (`IN_PROGRESS`, `COMPLETED`, `CANCELLED`) in the same transaction.

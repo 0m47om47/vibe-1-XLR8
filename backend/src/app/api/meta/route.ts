@@ -7,6 +7,7 @@ export const GET = route(async () =>
   ok({
     locations: LOCATIONS,
     tripDurationMinutes: config.tripDurationMinutes,
+    totoCapacity: config.totoCapacity,
     maxPassengers: config.maxPassengers,
     maxBookingDaysAhead: config.maxBookingDaysAhead,
   }),

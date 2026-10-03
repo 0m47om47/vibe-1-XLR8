@@ -51,22 +51,36 @@ export interface RideRequest {
 export interface TripPassenger {
   id: string;
   name: string;
+  /** The request this passenger was booked through (a run can carry several). */
+  requestId: string;
+  requesterName: string;
   boardingStatus: BoardingStatus;
   boardedAt: string | null;
   statusUpdatedAt: string | null;
 }
 
+export interface Seats {
+  capacity: number;
+  taken: number;
+  left: number;
+}
+
+/** One run of the Toto. Several requests can share it (same route + time, up to capacity). */
 export interface Trip {
   id: string;
-  requestId: string;
-  requester: { id: string; name: string };
+  requests: { requestId: string; requesterId: string; requesterName: string; passengerCount: number }[];
+  requestIds: string[];
   rider: { id: string; name: string };
   from: Location;
   to: Location;
   scheduledAt: string;
   endsAt: string;
   estimatedDurationMinutes: number;
+  seats: Seats;
+  /** Passengers this viewer may see (students only see their own request's). */
   passengers: TripPassenger[];
+  /** Everyone on the run, including passengers hidden from this viewer. */
+  passengerTotal: number;
   boarding: BoardingSummary;
   status: TripStatus;
   canStart: boolean;
@@ -110,13 +124,13 @@ export interface PersonHistory {
 
 export interface RiderHistoryEntry {
   tripId: string;
-  requestId: string;
+  requests: { requestId: string; requesterName: string; passengerCount: number }[];
   from: Location;
   to: Location;
   scheduledAt: string;
+  arriveAt: string;
   status: TripStatus;
-  requesterName: string;
-  passengers: { id: string; name: string; boardingStatus: BoardingStatus }[];
+  passengers: { id: string; name: string; requesterName: string; boardingStatus: BoardingStatus }[];
   boarding: BoardingSummary;
   startedAt: string | null;
   completedAt: string | null;
@@ -148,9 +162,28 @@ export interface RiderDashboard {
   completedTotal: number;
 }
 
+/** Public schedule: where the Toto goes, when, and how full it is (no names). */
+export interface ScheduleEntry {
+  tripId: string;
+  from: Location;
+  to: Location;
+  departAt: string;
+  arriveAt: string;
+  status: TripStatus;
+  seats: Seats;
+  /** A new request for this exact route and time can still join. */
+  joinable: boolean;
+}
+
+export interface Schedule {
+  capacity: number;
+  entries: ScheduleEntry[];
+}
+
 export interface Meta {
   locations: Location[];
   tripDurationMinutes: number;
+  totoCapacity: number;
   maxPassengers: number;
   maxBookingDaysAhead: number;
 }

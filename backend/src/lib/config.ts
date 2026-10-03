@@ -24,12 +24,20 @@ export const config = {
     if (!db) throw new Error("MONGODB_DB is not set. Copy .env.example to .env.local and fill it in.");
     return db;
   },
-  /** Default estimated trip duration used for overlap detection. */
+  /**
+   * Travel time of one run. A run departs at scheduledAt and arrives at
+   * scheduledAt + this; it holds the Toto for exactly that window.
+   */
   get tripDurationMinutes(): number {
-    return intFromEnv("TRIP_DURATION_MINUTES", 30, 5, 240);
+    return intFromEnv("TRIP_DURATION_MINUTES", 15, 5, 240);
   },
+  /** Seats in the Toto: the most passengers one run can carry (shared across requests). */
+  get totoCapacity(): number {
+    return intFromEnv("TOTO_CAPACITY", 5, 1, 20);
+  },
+  /** Passengers allowed in a single request (never more than the Toto holds). */
   get maxPassengers(): number {
-    return intFromEnv("MAX_PASSENGERS", 6, 1, 20);
+    return Math.min(intFromEnv("MAX_PASSENGERS", this.totoCapacity, 1, 20), this.totoCapacity);
   },
   get sessionTtlDays(): number {
     return intFromEnv("SESSION_TTL_DAYS", 7, 1, 90);

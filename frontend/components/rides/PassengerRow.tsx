@@ -17,6 +17,8 @@ interface PassengerRowProps {
   busy?: boolean;
   /** Highlight the row (e.g. "you" in a passenger list). */
   highlight?: boolean;
+  /** Small line under the name (e.g. who booked this passenger on a shared run). */
+  subtitle?: string;
 }
 
 export default function PassengerRow({
@@ -28,6 +30,7 @@ export default function PassengerRow({
   disabled = false,
   busy = false,
   highlight = false,
+  subtitle,
 }: PassengerRowProps) {
   const status = passenger.boardingStatus;
   const isHandled = status !== 'PENDING';
@@ -58,7 +61,10 @@ export default function PassengerRow({
           >
             {getInitials(passenger.name)}
           </div>
-          <span className="text-sm font-medium text-gray-900 truncate">{passenger.name}</span>
+          <div className="min-w-0">
+            <span className="text-sm font-medium text-gray-900 truncate block">{passenger.name}</span>
+            {subtitle && <span className="text-xs text-gray-400 truncate block">{subtitle}</span>}
+          </div>
           {highlight && (
             <span className="text-[10px] font-semibold uppercase tracking-wider text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md flex-shrink-0">
               You

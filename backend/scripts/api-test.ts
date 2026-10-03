@@ -234,13 +234,13 @@ async function run(mongoUri: string, dbName: string) {
 
     // A new request that overlaps an ACCEPTED trip is CLASHED at creation.
     const late = await amit.post("/api/requests", {
-      from: "Office", to: "College", scheduledAt: slot(7, 10, 20), passengers: [{ name: "Amit" }],
+      from: "Office", to: "College", scheduledAt: slot(7, 10, 10), passengers: [{ name: "Amit" }],
     });
     check("new request overlapping an accepted trip → created as CLASHED", late.status === 201 && late.body.data.request.status === "CLASHED" && late.body.data.clashed === true, late);
 
     // Half-open interval: a trip starting exactly when another ends does not overlap.
     const adjacent = await amit.post("/api/requests", {
-      from: "Station", to: "Office", scheduledAt: slot(7, 10, 30), passengers: [{ name: "Amit" }],
+      from: "Station", to: "Office", scheduledAt: slot(7, 10, 15), passengers: [{ name: "Amit" }],
     });
     check("back-to-back request (starts at end time) → PENDING, not clashed", adjacent.body.data.request.status === "PENDING", adjacent);
   }
@@ -253,7 +253,7 @@ async function run(mongoUri: string, dbName: string) {
       const created = await Promise.all(
         [rahul, neha, priya, amit, rahul].map((u, i) =>
           u.post("/api/requests", {
-            from: "College", to: "Office", scheduledAt: new Date(new Date(when).getTime() + i * 5 * 60_000).toISOString(),
+            from: "College", to: "Office", scheduledAt: new Date(new Date(when).getTime() + i * 3 * 60_000).toISOString(),
             passengers: [{ name: `Racer ${String.fromCharCode(65 + i)}` }],
           }),
         ),
@@ -450,6 +450,99 @@ async function run(mongoUri: string, dbName: string) {
 
     const cancelClashed = await amit.post(`/api/requests/${clash.body.data.request.id}/cancel`);
     check("a CLASHED request cannot be cancelled → 409", cancelClashed.status === 409, cancelClashed);
+  }
+
+  // -------------------------------------------------------------- POOLING
+  section("POOLING: shared runs (same route + time, up to 5 seats)");
+  {
+    const when = slot(25, 9);
+    const mk = (u: Client, names: string[], from = "College", to = "Office", at = when) =>
+      u.post("/api/requests", { from, to, scheduledAt: at, passengers: names.map((name) => ({ name })) });
+
+    const a = await mk(rahul, ["Rahul", "Arjun"]);
+    const b = await mk(neha, ["Neha", "Bela"]);
+    const c = await mk(amit, ["Amit", "Chetan"]);
+    const ra = await rider.post(`/api/requests/${a.body.data.request.id}/accept`);
+    check("first accept creates a new run (NEW_TRIP), 2/5 seats", ra.status === 200 && ra.body.data.outcome === "NEW_TRIP" && ra.body.data.trip.seats.taken === 2, ra.body);
+    const runId = ra.body.data.trip.id;
+    check("same route + time requests stay PENDING (not clashed) after the first accept",
+      ra.body.data.clashedRequestIds.length === 0, ra.body.data.clashedRequestIds);
+
+    const rb = await rider.post(`/api/requests/${b.body.data.request.id}/accept`);
+    check("second request JOINS the same run, 4/5 seats", rb.status === 200 && rb.body.data.outcome === "JOINED" && rb.body.data.trip.id === runId && rb.body.data.trip.seats.taken === 4, rb.body);
+    check("…and the 2-passenger request that no longer fits is CLASHED", rb.body.data.clashedRequestIds.includes(c.body.data.request.id), rb.body.data);
+    const rc = await rider.post(`/api/requests/${c.body.data.request.id}/accept`);
+    check("accepting it anyway → 409 TRIP_CLASH explaining seats ran out", rc.status === 409 && /seat/i.test(rc.body.error.message), rc.body);
+
+    const one = await mk(priya, ["Priya"]);
+    check("a 1-passenger request that fits is created PENDING with sharesTripId", one.body.data.request.status === "PENDING" && one.body.data.sharesTripId === runId, one.body);
+    const other = await mk(priya, ["Priya"], "Station", "Office");
+    check("different route at the same time → CLASHED at creation, with reason", other.body.data.request.status === "CLASHED" && /another run/.test(other.body.data.request.statusReason), other.body);
+    const dup = await mk(amit, ["Rahul"]);
+    const rdup = await rider.post(`/api/requests/${dup.body.data.request.id}/accept`);
+    check("a passenger already on the run cannot be added twice → 409", rdup.status === 409 && /already booked/.test(rdup.body.error.message), rdup.body);
+    const r1 = await rider.post(`/api/requests/${one.body.data.request.id}/accept`);
+    check("the fitting request joins → run full at 5/5", r1.status === 200 && r1.body.data.trip.seats.taken === 5 && r1.body.data.trip.seats.left === 0, r1.body);
+
+    // Public schedule: seats + arrival time, no names.
+    const sched = await neha.get("/api/schedule?days=30");
+    const entry = sched.body.data.entries.find((e: any) => e.tripId === runId);
+    check("schedule shows the run to any user: 5/5 seats, arrival = departure + 15 min, not joinable",
+      !!entry && entry.seats.taken === 5 && new Date(entry.arriveAt).getTime() - new Date(entry.departAt).getTime() === 15 * 60_000 && entry.joinable === false, entry);
+    check("schedule never includes passenger names", !JSON.stringify(sched.body).includes("Arjun"));
+
+    // Privacy on a shared run.
+    const mine = await neha.get(`/api/requests/${b.body.data.request.id}`);
+    check("a requester sees only their own passengers on a shared run (others counted)",
+      mine.body.data.trip.passengers.length === 2 && mine.body.data.trip.passengerTotal === 5 && !JSON.stringify(mine.body).includes("Arjun"), mine.body.data.trip);
+
+    // Cancelling one request frees its seats; the run stays.
+    const cancel = await rahul.post(`/api/requests/${a.body.data.request.id}/cancel`);
+    const afterCancel = await rider.get(`/api/trips/${runId}`);
+    check("cancelling one request on a shared run frees its seats, run stays ACCEPTED (3/5)",
+      cancel.status === 200 && afterCancel.body.data.trip.status === "ACCEPTED" && afterCancel.body.data.trip.seats.taken === 3 && afterCancel.body.data.trip.requests.length === 2, afterCancel.body.data.trip);
+
+    // Concurrent joins can never overfill the Toto.
+    const when2 = slot(27, 11);
+    const base = await mk(rahul, ["Rahul"], "Station", "College", when2);
+    await rider.post(`/api/requests/${base.body.data.request.id}/accept`);
+    const racers = await Promise.all([
+      mk(neha, ["Neha", "Race One"], "Station", "College", when2),
+      mk(amit, ["Amit", "Race Two"], "Station", "College", when2),
+      mk(priya, ["Priya", "Race Three"], "Station", "College", when2),
+    ]);
+    const results = await Promise.all(racers.map((r) => rider.post(`/api/requests/${r.body.data.request.id}/accept`)));
+    const won = results.filter((r) => r.status === 200);
+    const lost = results.filter((r) => r.status === 409);
+    check("3 simultaneous joins of 2 passengers into a 1/5 run → exactly 2 join, 1 gets 409",
+      won.length === 2 && lost.length === 1, results.map((r) => [r.status, r.body.error?.message]));
+    const run2 = await rider.get(`/api/trips/${won[0]?.body.data.trip.id}`);
+    check("…and the run holds exactly 5 passengers (never over capacity)", run2.body.data.trip?.seats.taken === 5, run2.body.data.trip?.seats);
+
+    // Shared run lifecycle: start/complete update every request; per-person histories.
+    // (TEST 9 left another trip in progress — the Toto must finish it first.)
+    const busy = await rider.get("/api/trips/current");
+    if (busy.body.data.trip?.status === "IN_PROGRESS") {
+      for (const p of busy.body.data.trip.passengers) {
+        await rider.patch(`/api/trips/${busy.body.data.trip.id}/passengers/${p.id}`, { boardingStatus: "BOARDED" });
+      }
+      await rider.post(`/api/trips/${busy.body.data.trip.id}/complete`);
+    }
+    const start = await rider.post(`/api/trips/${runId}/start`);
+    const nehaReq = await neha.get(`/api/requests/${b.body.data.request.id}`);
+    check("starting a shared run puts every request on it IN_PROGRESS", start.status === 200 && nehaReq.body.data.request.status === "IN_PROGRESS", [start.body, nehaReq.body.data?.request]);
+    for (const p of start.body.data.trip.passengers) {
+      await rider.patch(`/api/trips/${runId}/passengers/${p.id}`, { boardingStatus: p.name === "Bela" ? "MISSED" : "BOARDED" });
+    }
+    const done = await rider.post(`/api/trips/${runId}/complete`);
+    const pReq = await priya.get(`/api/requests/${one.body.data.request.id}`);
+    check("completing it marks every request COMPLETED", done.status === 200 && pReq.body.data.request.status === "COMPLETED", pReq.body.data.request);
+    const nh = await neha.get("/api/history/person");
+    const ne = nh.body.data.entries.find((e: any) => e.tripId === runId);
+    check("each passenger's history has the shared run with their own status and requester", ne?.boardingStatus === "BOARDED" && ne.requesterName === "Neha", ne);
+    const rh = await rider.get("/api/history/rider");
+    const re = rh.body.data.entries.find((e: any) => e.tripId === runId);
+    check("rider history shows the shared run with both requests and 3 passengers", re?.requests.length === 2 && re.boarding.total === 3 && re.boarding.missed === 1, re);
   }
 
   // -------------------------------------------------------------- dashboards & misc

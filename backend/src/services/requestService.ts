@@ -3,21 +3,30 @@ import type { CurrentUser } from "@/lib/auth";
 import { config } from "@/lib/config";
 import { db } from "@/lib/db";
 import { ApiError, badRequest, invalidState, notFound } from "@/lib/errors";
-import { clashOverlappingPendingRequests, findConflictingTrip, tripWindow } from "@/lib/clashDetection";
+import {
+  assessPooling,
+  clashOverlappingPendingRequests,
+  findOverlappingTrip,
+  tripWindow,
+} from "@/lib/clashDetection";
 import { withTotoReservation } from "@/lib/totoLock";
 import type { CreateRequestInput } from "@/lib/validation";
 import { toRequestDTO, type RequestDTO, type RequestStatus, type RideRequestDoc } from "@/models/RideRequest";
-import { toTripDTO, type TripDTO, type TripDoc } from "@/models/Trip";
-
-const CLASH_REASON = "The Toto is already booked for an overlapping time. It can run only one trip at a time.";
+import { toTripDTO, type TripDTO, type TripDoc, type TripPassenger } from "@/models/Trip";
 
 // ------------------------------------------------------------------ create
 
-export type CreateRequestResult = { request: RequestDTO; clashed: boolean };
+export type CreateRequestResult = {
+  request: RequestDTO;
+  clashed: boolean;
+  /** Set when an accepted run already goes this way at this time and the request fits on it. */
+  sharesTripId: string | null;
+};
 
 /**
- * Creates a ride request. If the Toto is already reserved (ACCEPTED/IN_PROGRESS
- * trip) for an overlapping window, the request is stored immediately as CLASHED.
+ * Creates a ride request. If an accepted run overlaps it:
+ *  - same route + time with enough seats → stays PENDING (the rider can add it to that run),
+ *  - otherwise → stored immediately as CLASHED with the reason.
  * Runs under the Toto lock so the check cannot race with a concurrent accept.
  */
 export async function createRideRequest(user: CurrentUser, input: CreateRequestInput): Promise<CreateRequestResult> {
@@ -25,9 +34,8 @@ export async function createRideRequest(user: CurrentUser, input: CreateRequestI
   const duration = config.tripDurationMinutes;
   const window = tripWindow(input.scheduledAt, duration);
 
-  const doc = await withTotoReservation(async (session) => {
+  const { doc, sharesTripId } = await withTotoReservation(async (session) => {
     const now = new Date();
-    const conflictingTrip = await findConflictingTrip(trips, window, session);
     const request: RideRequestDoc = {
       _id: new ObjectId(),
       requesterId: user._id,
@@ -45,19 +53,32 @@ export async function createRideRequest(user: CurrentUser, input: CreateRequestI
         // Link the passenger entry to the requester's account when it is them.
         userId: p.nameKey === user.nameKey ? user._id : null,
       })),
-      status: conflictingTrip ? "CLASHED" : "PENDING",
+      status: "PENDING",
       tripId: null,
-      clashedWithTripId: conflictingTrip?._id ?? null,
-      statusReason: conflictingTrip ? CLASH_REASON : null,
+      clashedWithTripId: null,
+      statusReason: null,
       cancelledAt: null,
       createdAt: now,
       updatedAt: now,
     };
+
+    const overlapping = await findOverlappingTrip(trips, window, session);
+    let shares: string | null = null;
+    if (overlapping) {
+      const decision = assessPooling(overlapping, request);
+      if (decision.canJoin) {
+        shares = overlapping._id.toHexString();
+      } else {
+        request.status = "CLASHED";
+        request.clashedWithTripId = overlapping._id;
+        request.statusReason = decision.reason;
+      }
+    }
     await rideRequests.insertOne(request, { session });
-    return request;
+    return { doc: request, sharesTripId: shares };
   });
 
-  return { request: toRequestDTO(doc), clashed: doc.status === "CLASHED" };
+  return { request: toRequestDTO(doc), clashed: doc.status === "CLASHED", sharesTripId };
 }
 
 // ------------------------------------------------------------------ read
@@ -96,6 +117,10 @@ async function loadVisibleRequest(user: CurrentUser, id: ObjectId): Promise<Ride
   return doc;
 }
 
+/**
+ * The request plus the run it rides on. On a shared run, students/employees only
+ * see the passengers of this request (others are counted, not named).
+ */
 export async function getRideRequest(
   user: CurrentUser,
   id: ObjectId,
@@ -106,14 +131,19 @@ export async function getRideRequest(
     const { trips } = await db();
     trip = await trips.findOne({ _id: doc.tripId });
   }
-  return { request: toRequestDTO(doc), trip: trip ? toTripDTO(trip) : null };
+  return {
+    request: toRequestDTO(doc),
+    trip: trip ? toTripDTO(trip, user.role === "RIDER" ? {} : { visibleRequestIds: [doc._id] }) : null,
+  };
 }
 
 // ------------------------------------------------------------------ cancel
 
 /**
  * The requester may cancel while PENDING, or while ACCEPTED before pickup starts.
- * Cancelling an accepted request also cancels its trip, which frees the Toto.
+ * Cancelling an accepted request takes its passengers off the run (freeing their
+ * seats); if nobody is left on the run, the run itself is cancelled and the Toto
+ * is free for that window again.
  */
 export async function cancelRideRequest(user: CurrentUser, id: ObjectId): Promise<RequestDTO> {
   const { rideRequests, trips } = await db();
@@ -128,12 +158,21 @@ export async function cancelRideRequest(user: CurrentUser, id: ObjectId): Promis
     }
 
     if (doc.status === "ACCEPTED" && doc.tripId) {
-      const res = await trips.updateOne(
-        { _id: doc.tripId, status: "ACCEPTED" },
-        { $set: { status: "CANCELLED", cancelledAt: now, updatedAt: now } },
+      const trip = await trips.findOne({ _id: doc.tripId }, { session });
+      if (!trip || trip.status !== "ACCEPTED") {
+        throw invalidState("The trip has already started and can no longer be cancelled");
+      }
+      const remaining = trip.requests.filter((r) => !r.requestId.equals(id));
+      await trips.updateOne(
+        { _id: trip._id, status: "ACCEPTED" },
+        remaining.length === 0
+          ? { $set: { status: "CANCELLED", cancelledAt: now, updatedAt: now } }
+          : {
+              $pull: { requests: { requestId: id }, passengers: { requestId: id } },
+              $set: { updatedAt: now },
+            },
         { session },
       );
-      if (res.modifiedCount !== 1) throw invalidState("The trip has already started and can no longer be cancelled");
     }
 
     const after = await rideRequests.findOneAndUpdate(
@@ -151,22 +190,45 @@ export async function cancelRideRequest(user: CurrentUser, id: ObjectId): Promis
 // ------------------------------------------------------------------ accept (rider)
 
 export type AcceptResult =
-  | { outcome: "ACCEPTED"; request: RequestDTO; trip: TripDTO; clashedRequestIds: string[] }
-  | { outcome: "CLASHED"; request: RequestDTO; conflictingTripId: string };
+  | {
+      /** NEW_TRIP = a new run was created; JOINED = added to an accepted run going the same way. */
+      outcome: "NEW_TRIP" | "JOINED";
+      request: RequestDTO;
+      trip: TripDTO;
+      clashedRequestIds: string[];
+    }
+  | { outcome: "CLASHED"; request: RequestDTO; conflictingTripId: string; reason: string };
+
+function toTripPassengers(request: RideRequestDoc): TripPassenger[] {
+  return request.passengers.map((p) => ({
+    _id: p._id,
+    name: p.name,
+    nameKey: p.nameKey,
+    userId: p.userId,
+    requestId: request._id,
+    requesterName: request.requesterName,
+    boardingStatus: "PENDING",
+    boardedAt: null,
+    statusUpdatedAt: null,
+  }));
+}
 
 /**
- * Rider accepts a PENDING request and reserves the Toto for its window.
+ * Rider accepts a PENDING request.
  *
  * Inside one transaction holding the Toto lock (see lib/totoLock.ts):
- *   1. re-read the request (must still be PENDING),
- *   2. re-check for an overlapping ACCEPTED/IN_PROGRESS trip — immediately
- *      before the write, on data no concurrent transaction can change,
- *   3a. overlap  → mark THIS request CLASHED (committed), caller returns 409,
- *   3b. free     → insert the trip, mark the request ACCEPTED and mark every
- *                  other overlapping PENDING request CLASHED.
+ *   1. re-read the request (must still be PENDING and in the future),
+ *   2. find the run overlapping its window — immediately before the write, on
+ *      data no concurrent transaction can change,
+ *   3a. no run       → create a new run with this request,
+ *   3b. a run that it can share (same route + time, seats left, not started)
+ *                    → add its passengers to that run,
+ *   3c. anything else → mark THIS request CLASHED (committed); caller returns 409,
+ *   4. re-check every other overlapping PENDING request against the run: those
+ *      that no longer fit (other route, or seats ran out) become CLASHED.
  *
- * Two simultaneous accepts for overlapping requests are therefore serialised:
- * exactly one creates a trip, the other observes it and becomes CLASHED.
+ * Simultaneous accepts are serialised by the lock, so the seat count can never
+ * go over capacity and two different runs can never overlap.
  */
 export async function acceptRideRequest(rider: CurrentUser, id: ObjectId): Promise<AcceptResult> {
   const { rideRequests, trips } = await db();
@@ -177,7 +239,7 @@ export async function acceptRideRequest(rider: CurrentUser, id: ObjectId): Promi
     if (!request) throw notFound("Ride request");
 
     if (request.status === "CLASHED") {
-      throw new ApiError(409, "TRIP_CLASH", "This request clashes with a trip that is already booked", {
+      throw new ApiError(409, "TRIP_CLASH", request.statusReason ?? "This request clashes with a booked run", {
         requestStatus: "CLASHED",
         conflictingTripId: request.clashedWithTripId?.toHexString() ?? null,
       });
@@ -189,60 +251,92 @@ export async function acceptRideRequest(rider: CurrentUser, id: ObjectId): Promi
       throw badRequest("The requested pickup time has already passed");
     }
 
-    const window = { start: request.scheduledAt, end: request.endsAt };
-    const conflictingTrip = await findConflictingTrip(trips, window, session);
+    const overlapping = await findOverlappingTrip(trips, { start: request.scheduledAt, end: request.endsAt }, session);
 
-    if (conflictingTrip) {
-      const clashed = await rideRequests.findOneAndUpdate(
-        { _id: id, status: "PENDING" },
-        {
-          $set: {
-            status: "CLASHED",
-            clashedWithTripId: conflictingTrip._id,
-            statusReason: CLASH_REASON,
-            updatedAt: now,
+    let trip: TripDoc;
+    let outcome: "NEW_TRIP" | "JOINED";
+
+    if (overlapping) {
+      const decision = assessPooling(overlapping, request);
+      if (!decision.canJoin) {
+        const clashed = await rideRequests.findOneAndUpdate(
+          { _id: id, status: "PENDING" },
+          {
+            $set: {
+              status: "CLASHED",
+              clashedWithTripId: overlapping._id,
+              statusReason: decision.reason,
+              updatedAt: now,
+            },
           },
+          { session, returnDocument: "after" },
+        );
+        return {
+          outcome: "CLASHED",
+          request: toRequestDTO(clashed!, now),
+          conflictingTripId: overlapping._id.toHexString(),
+          reason: decision.reason,
+        };
+      }
+
+      // Share the run. The filter re-asserts the seat count atomically.
+      const joined = await trips.findOneAndUpdate(
+        {
+          _id: overlapping._id,
+          status: "ACCEPTED",
+          [`passengers.${overlapping.capacity - request.passengers.length}`]: { $exists: false },
+        },
+        {
+          $push: {
+            requests: {
+              requestId: request._id,
+              requesterId: request.requesterId,
+              requesterName: request.requesterName,
+              passengerCount: request.passengers.length,
+              joinedAt: now,
+            },
+            passengers: { $each: toTripPassengers(request) },
+          },
+          $set: { updatedAt: now },
         },
         { session, returnDocument: "after" },
       );
-      return {
-        outcome: "CLASHED",
-        request: toRequestDTO(clashed!, now),
-        conflictingTripId: conflictingTrip._id.toHexString(),
+      if (!joined) throw invalidState("The run changed while accepting. Please refresh.");
+      trip = joined;
+      outcome = "JOINED";
+    } else {
+      trip = {
+        _id: new ObjectId(),
+        vehicleId: config.vehicleId,
+        requests: [
+          {
+            requestId: request._id,
+            requesterId: request.requesterId,
+            requesterName: request.requesterName,
+            passengerCount: request.passengers.length,
+            joinedAt: now,
+          },
+        ],
+        riderId: rider._id,
+        riderName: rider.name,
+        from: request.from,
+        to: request.to,
+        scheduledAt: request.scheduledAt,
+        endsAt: request.endsAt,
+        estimatedDurationMinutes: request.estimatedDurationMinutes,
+        capacity: config.totoCapacity,
+        passengers: toTripPassengers(request),
+        status: "ACCEPTED",
+        acceptedAt: now,
+        startedAt: null,
+        completedAt: null,
+        cancelledAt: null,
+        createdAt: now,
+        updatedAt: now,
       };
+      await trips.insertOne(trip, { session });
+      outcome = "NEW_TRIP";
     }
-
-    const trip: TripDoc = {
-      _id: new ObjectId(),
-      vehicleId: config.vehicleId,
-      requestId: request._id,
-      requesterId: request.requesterId,
-      requesterName: request.requesterName,
-      riderId: rider._id,
-      riderName: rider.name,
-      from: request.from,
-      to: request.to,
-      scheduledAt: request.scheduledAt,
-      endsAt: request.endsAt,
-      estimatedDurationMinutes: request.estimatedDurationMinutes,
-      passengers: request.passengers.map((p) => ({
-        _id: p._id,
-        name: p.name,
-        nameKey: p.nameKey,
-        userId: p.userId,
-        boardingStatus: "PENDING",
-        boardedAt: null,
-        statusUpdatedAt: null,
-      })),
-      status: "ACCEPTED",
-      acceptedAt: now,
-      startedAt: null,
-      completedAt: null,
-      cancelledAt: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await trips.insertOne(trip, { session });
 
     const accepted = await rideRequests.findOneAndUpdate(
       { _id: id, status: "PENDING" },
@@ -254,7 +348,7 @@ export async function acceptRideRequest(rider: CurrentUser, id: ObjectId): Promi
     const clashedIds = await clashOverlappingPendingRequests(rideRequests, trip, session, now);
 
     return {
-      outcome: "ACCEPTED",
+      outcome,
       request: toRequestDTO(accepted, now),
       trip: toTripDTO(trip),
       clashedRequestIds: clashedIds.map((x) => x.toHexString()),

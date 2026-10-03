@@ -48,8 +48,9 @@ Collections and indexes are created automatically on first use. The seed script 
 | `MONGODB_URI` | ✅ | — | Atlas connection string |
 | `MONGODB_DB` | ✅ | — | Database name, e.g. `lawazia_toto` |
 | `FRONTEND_ORIGIN` | recommended | — | Browser origin of the frontend (`http://localhost:3000`). Mutating requests from other origins get 403 (CSRF defence). It is also the only CORS origin allowed with credentials |
-| `TRIP_DURATION_MINUTES` | | `30` | Estimated trip length used for overlap detection |
-| `MAX_PASSENGERS` | | `6` | Passengers per request |
+| `TRIP_DURATION_MINUTES` | | `15` | Travel time of one run (departure → arrival); also the window the run holds the Toto |
+| `TOTO_CAPACITY` | | `5` | Seats in the Toto: the most passengers one (shared) run can carry |
+| `MAX_PASSENGERS` | | `5` | Passengers per request (capped at `TOTO_CAPACITY`) |
 | `SESSION_TTL_DAYS` | | `7` | Session lifetime |
 
 `.env.local` is git-ignored. Only `.env.example` is committed.
@@ -71,16 +72,20 @@ Seeded data. Times are in the server's local timezone, relative to the day you r
 | When | Route | Passengers | State |
 |---|---|---|---|
 | 2 days ago 17:30 | Office → College | Amit ✓, Neha ✓, Rohit ✗ | COMPLETED |
-| 2 days ago 17:45 | Office → Station | Neha | CLASHED with the trip above |
-| Yesterday 10:00 | College → Station | Rahul ✓, Amit ✓, Priya ✗ | COMPLETED |
+| 2 days ago 17:30 | Office → Station | Neha | CLASHED (another run at that time) |
+| Yesterday 10:00 | College → Station | **Shared run:** Rahul's request (Rahul ✓, Priya ✗) + Amit's (Amit ✓) | COMPLETED |
 | **Tomorrow 10:00** | **College → Station** | **Rahul, Amit, Priya** | **PENDING (demo Request 1)** |
 | **Tomorrow 10:00** | **Office → Station** | **Neha, Rohit** | **PENDING (demo Request 2)** |
-| Tomorrow 14:00 | Station → Office | Priya | ACCEPTED |
-| Tomorrow 14:15 | College → Office | Neha | CLASHED with the 14:00 trip |
+| Tomorrow 14:00 | College → Office (arrives ~14:15) | Priya | ACCEPTED, 1/5 seats |
+| Tomorrow 14:00 | College → Office | Amit, Kiran | PENDING, can join the 14:00 run |
+| Tomorrow 14:00 | College → Office | Neha | PENDING, can join the 14:00 run |
+| Tomorrow 14:00 | Station → Office | Rahul | CLASHED (different route, same time) |
 | Tomorrow 17:00 | Office → College | Amit | PENDING |
 | Day after 09:00 | College → Office | Priya, Rahul | CANCELLED |
 
 To run the demo, accept Request 1 as the rider; Request 2 then becomes CLASHED. Start the trip, mark Rahul and Amit BOARDED and Priya MISSED, then complete it.
+
+To see pooling, press **Add to Run** on Amit's and Neha's 14:00 requests; the run fills to 4/5 seats. Every user's dashboard shows it in the Toto schedule with its arrival time at Office.
 
 ---
 
@@ -119,13 +124,13 @@ Auth is a `toto_session` HTTP-only cookie set by login/register. Dates are ISO-8
 
 | Method & path | Role | Body / query | Result |
 |---|---|---|---|
-| `POST /api/requests` | STUDENT, EMPLOYEE | `{ from, to, scheduledAt, passengers: [{ name }] }` | 201 `{ request, clashed }`. `status` is `PENDING`, or `CLASHED` if the Toto is already booked then |
+| `POST /api/requests` | STUDENT, EMPLOYEE | `{ from, to, scheduledAt, passengers: [{ name }] }` | 201 `{ request, clashed, sharesTripId }`. `status` is `PENDING` (`sharesTripId` set if it can share an accepted run), or `CLASHED` with `statusReason` |
 | `GET /api/requests` | any | `?status=&upcoming=true&limit=` | `{ requests }`. Students/employees see their own; the rider sees all |
 | `GET /api/requests/:id` | owner, a listed passenger, or RIDER | — | `{ request, trip }`. `trip` includes per-passenger boarding |
 | `POST /api/requests/:id/cancel` | owner | — | `{ request }`. Allowed while `PENDING`, or `ACCEPTED` and not started (also cancels the trip and frees the Toto) |
-| `POST /api/requests/:id/accept` | RIDER | — | 200 `{ request, trip, clashedRequestIds }` or **409 `TRIP_CLASH`** (the request is now `CLASHED`) |
+| `POST /api/requests/:id/accept` | RIDER | — | 200 `{ outcome: NEW_TRIP\|JOINED, request, trip, clashedRequestIds }` or **409 `TRIP_CLASH`**. The request is then `CLASHED`, and `message` says why: another run at that time, or not enough seats |
 
-`from` / `to` must be one of `College`, `Station` or `Office`, and they must differ. `scheduledAt` is ISO-8601 with a timezone, in the future, and within 60 days. A request has 1–6 passengers, and names must be unique within it (case-insensitive).
+`from` / `to` must be one of `College`, `Station` or `Office`, and they must differ. `scheduledAt` is ISO-8601 with a timezone, in the future, and within 60 days. A request has 1–5 passengers, and names must be unique within it (case-insensitive).
 
 ### Trips (rider workflow)
 
@@ -148,14 +153,15 @@ A trip DTO includes `boarding: { total, boarded, missed, pending }`, `canStart` 
 | `GET /api/history/person?name=Rahul` | RIDER | `name` | That passenger on trips this rider handled |
 | `GET /api/history/rider` | RIDER | `?status=&limit=` | `{ totals, entries[] }`. Each entry has boarded/missed counts |
 | `GET /api/dashboard` | any | rider: `?dayStart=<ISO>` | Role-specific summary (see `services/dashboardService.ts`) |
-| `GET /api/meta` | public | — | `{ locations, tripDurationMinutes, maxPassengers, maxBookingDaysAhead }` |
+| `GET /api/schedule?days=7` | any logged-in | `days` (1–60) | `{ capacity, entries[] }`: upcoming runs with `from`, `to`, `departAt`, `arriveAt`, `seats {capacity, taken, left}`, `joinable`. No names |
+| `GET /api/meta` | public | — | `{ locations, tripDurationMinutes, totoCapacity, maxPassengers, maxBookingDaysAhead }` |
 | `GET /api/health` | public | — | DB connectivity |
 
 ---
 
 ## 6. Clash detection & the concurrency guarantee
 
-**Overlap.** A trip occupies `[scheduledAt, scheduledAt + duration)`, where the duration defaults to 30 minutes. Two trips overlap when `newStart < existingEnd && newEnd > existingStart`. The interval is half-open, so back-to-back trips (10:00–10:30 and 10:30–11:00) are fine. Only `ACCEPTED` and `IN_PROGRESS` trips hold the Toto. `endsAt` is stored on every document so the overlap query is a single indexed range scan (`src/lib/clashDetection.ts`).
+**Overlap.** A run occupies `[departure, arrival)`, where arrival = departure + `TRIP_DURATION_MINUTES` (default 15). Two windows overlap when `newStart < existingEnd && newEnd > existingStart`. The interval is half-open, so back-to-back runs are fine. For example, College → Office 14:00–14:15 can be followed by Office → Station from 14:15. Only `ACCEPTED` and `IN_PROGRESS` trips hold the Toto. `endsAt` is stored on every document so the overlap query is a single indexed range scan (`src/lib/clashDetection.ts`).
 
 **When clashes are decided.** All of this happens on the server; the client is never trusted:
 
@@ -174,6 +180,22 @@ As a second, independent safeguard, a **partial unique index** `{ vehicleId: 1 }
 
 **Verified:** `npm run test:api` fires 5 accepts for mutually-overlapping requests at the same instant, 5 rounds in a row. Each round, exactly one wins, four get 409 and end `CLASHED`, and the database holds exactly one active trip. As a negative control, when the lock and the clash cascade were removed, the same test caught double bookings in all 5 rounds.
 
+**Shared runs (pooling).** An overlap is not automatically a clash. A request **joins** an accepted run when all of these hold:
+- it has the same `from`, the same `to` and the same departure time;
+- the run hasn't started;
+- there are enough free seats (`TOTO_CAPACITY`, default 5);
+- none of its passengers is already on the run.
+
+Anything else that overlaps is a clash, and `statusReason` says which rule it broke.
+
+After every accept, the other pending requests that overlap the run are re-checked. Those that can still share it stay `PENDING`; the rest become `CLASHED`.
+
+The seat count is checked inside the same Toto-lock transaction, and the join update re-asserts it in its filter. So simultaneous joins can never overfill the Toto. The tests fire 3 concurrent joins at a run with 4 free seats: exactly 2 join, and the run ends at 5/5.
+
+Cancelling one request on a shared run removes its passengers and frees their seats. The run itself is cancelled only when no request is left on it.
+
+**Public schedule.** `GET /api/schedule` shows everyone the upcoming runs: departure, **arrival** (so people at the destination know when the Toto gets there), and seats taken/left. On a shared run, students only see their own request's passengers; everyone else is counted, not named.
+
 ## 7. Database design
 
 Five collections. Passenger lists are **embedded**: they are small and bounded, always read with their parent, and must be frozen exactly as they were on the trip.
@@ -186,9 +208,10 @@ rideRequests  { _id, requesterId, requesterName, requesterRole, from, to, schedu
                 estimatedDurationMinutes, passengers: [{ _id, name, nameKey, userId }],
                 status: PENDING|ACCEPTED|IN_PROGRESS|COMPLETED|CLASHED|CANCELLED,
                 tripId, clashedWithTripId, statusReason, cancelledAt, createdAt, updatedAt }
-trips         { _id, vehicleId, requestId (unique), requesterId, requesterName, riderId, riderName,
+trips         { _id, vehicleId, requests: [{ requestId, requesterId, requesterName, passengerCount, joinedAt }],
+                riderId, riderName, capacity,
                 from, to, scheduledAt, endsAt, estimatedDurationMinutes,
-                passengers: [{ _id, name, nameKey, userId, boardingStatus: PENDING|BOARDED|MISSED,
+                passengers: [{ _id, name, nameKey, userId, requestId, requesterName, boardingStatus: PENDING|BOARDED|MISSED,
                                boardedAt, statusUpdatedAt }],
                 status: ACCEPTED|IN_PROGRESS|COMPLETED|CANCELLED,
                 acceptedAt, startedAt, completedAt, cancelledAt, createdAt, updatedAt }
@@ -217,7 +240,7 @@ Indexes (`src/lib/dbSetup.ts`):
   - `{riderId, scheduledAt}`: rider history
   - `{status, scheduledAt}`
   - `{passengers.nameKey, scheduledAt}` and `{passengers.userId, scheduledAt}`: person history
-  - `requestId` (unique)
+  - `requests.requestId`: which run a request is on
   - partial unique "one IN_PROGRESS trip per vehicle"
 
 ### How boarding history works

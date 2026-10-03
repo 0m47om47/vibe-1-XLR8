@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/app-state';
 import { api, ApiError, errorMessage } from '@/lib/api';
 import { useApiData } from '@/lib/use-api';
-import type { RideRequest, RiderDashboard, Trip } from '@/lib/types';
+import type { RideRequest, RiderDashboard, Schedule, Trip } from '@/lib/types';
+import { SeatMeter } from '@/components/rides/TotoSchedule';
 import AppLayout from '@/components/layout/AppLayout';
 import TopHeader from '@/components/layout/TopHeader';
 import StatusBadge from '@/components/ui/StatusBadge';
@@ -43,10 +44,11 @@ function RiderDesk() {
   const [dayStart] = useState(startOfTodayIso);
   const dash = useApiData<RiderDashboard>(`/dashboard?dayStart=${encodeURIComponent(dayStart)}`);
   const queue = useApiData<{ requests: RideRequest[] }>('/requests?upcoming=true&limit=100');
+  const sched = useApiData<Schedule>('/schedule?days=60');
   const [acting, setActing] = useState<string | null>(null);
 
   const refresh = async () => {
-    await Promise.all([dash.reload(), queue.reload()]);
+    await Promise.all([dash.reload(), queue.reload(), sched.reload()]);
   };
 
   const requests = useMemo(
@@ -57,18 +59,26 @@ function RiderDesk() {
   const handleAccept = async (request: RideRequest) => {
     setActing(request.id);
     try {
-      const res = await api.post<{ request: RideRequest; trip: Trip; clashedRequestIds: string[] }>(
-        `/requests/${request.id}/accept`,
-      );
+      const res = await api.post<{
+        outcome: 'NEW_TRIP' | 'JOINED';
+        request: RideRequest;
+        trip: Trip;
+        clashedRequestIds: string[];
+      }>(`/requests/${request.id}/accept`);
       const n = res.clashedRequestIds.length;
+      const seats = `${res.trip.seats.taken}/${res.trip.seats.capacity} seats`;
+      const base =
+        res.outcome === 'JOINED'
+          ? `Added to the ${formatTime(res.trip.scheduledAt)} run — ${seats}.`
+          : `Ride accepted — the Toto is reserved (${seats}).`;
       if (n > 0) {
-        addToast('warning', `Ride accepted. ${n} overlapping request${n > 1 ? 's were' : ' was'} marked as clashed.`);
+        addToast('warning', `${base} ${n} overlapping request${n > 1 ? 's were' : ' was'} marked as clashed.`);
       } else {
-        addToast('success', 'Ride accepted — the Toto is reserved.');
+        addToast('success', base);
       }
     } catch (err) {
       if (err instanceof ApiError && err.code === 'TRIP_CLASH') {
-        addToast('warning', 'Time slot unavailable — the Toto is already booked then. Request marked as clashed.');
+        addToast('warning', `Clashed — ${err.message}`);
       } else {
         addToast('error', errorMessage(err));
       }
@@ -138,9 +148,9 @@ function RiderDesk() {
             </div>
             <p className={`text-xs sm:text-sm mt-0.5 ${onTrip ? 'text-blue-600' : 'text-green-600'}`}>
               {inProgress
-                ? `${formatRoute(inProgress.from, inProgress.to)} — ${inProgress.boarding.pending} passenger${inProgress.boarding.pending !== 1 ? 's' : ''} to mark`
+                ? `${formatRoute(inProgress.from, inProgress.to)} · arrives ~${formatTime(inProgress.endsAt)} — ${inProgress.boarding.pending} passenger${inProgress.boarding.pending !== 1 ? 's' : ''} to mark`
                 : readyTrip
-                  ? `Next: ${formatRoute(readyTrip.from, readyTrip.to)} · ${formatDayLabel(readyTrip.scheduledAt)}, ${formatTime(readyTrip.scheduledAt)}`
+                  ? `Next: ${formatRoute(readyTrip.from, readyTrip.to)} · ${formatDayLabel(readyTrip.scheduledAt)}, ${formatTime(readyTrip.scheduledAt)} · ${readyTrip.seats.taken}/${readyTrip.seats.capacity} seats`
                   : 'Ready for the next trip'}
             </p>
           </div>
@@ -202,6 +212,12 @@ function RiderDesk() {
           {requests.map((request, i) => {
             const isClashed = request.status === 'CLASHED';
             const isBooked = request.status === 'ACCEPTED' || request.status === 'IN_PROGRESS';
+            // The accepted run this request goes with (same route + departure), if any.
+            const run = sched.data?.entries.find(
+              (e) =>
+                (isBooked ? e.tripId === request.tripId : e.from === request.from && e.to === request.to && e.departAt === request.scheduledAt),
+            );
+            const canShare = request.status === 'PENDING' && run?.joinable && run.seats.left >= request.passengerCount;
             const newDay = i === 0 || formatDayLabel(requests[i - 1].scheduledAt) !== formatDayLabel(request.scheduledAt);
 
             return (
@@ -263,6 +279,15 @@ function RiderDesk() {
                           <span>Requested by {request.requester.name}</span>
                         </div>
 
+                        {run && (isBooked || canShare) && (
+                          <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-2 text-xs text-gray-500">
+                            <span className="font-medium text-blue-700">
+                              {isBooked ? 'Run' : `Shares the ${formatTime(run.departAt)} run`} · arrives {run.to} ~{formatTime(run.arriveAt)}
+                            </span>
+                            <SeatMeter seats={run.seats} />
+                          </div>
+                        )}
+
                         {/* Passenger avatars */}
                         <div className="flex items-center gap-1 mt-3">
                           {request.passengers.map((p) => (
@@ -287,7 +312,7 @@ function RiderDesk() {
                             disabled={acting !== null}
                             className="w-full sm:w-auto"
                           >
-                            Accept
+                            {canShare ? 'Add to Run' : 'Accept'}
                           </Button>
                         )}
                         {isBooked && request.tripId && (
@@ -309,7 +334,7 @@ function RiderDesk() {
                         <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
                         <div>
                           <p className="text-xs sm:text-sm font-medium text-amber-800">Time slot unavailable</p>
-                          <p className="text-xs text-amber-600">The Toto is already assigned for this time.</p>
+                          <p className="text-xs text-amber-600">{request.statusReason ?? 'The Toto is already assigned for this time.'}</p>
                         </div>
                       </div>
                     )}

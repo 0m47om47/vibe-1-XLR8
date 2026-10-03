@@ -41,6 +41,10 @@ export async function ensureDatabase(db: Db): Promise<void> {
 
   const c = collections(db);
 
+  // Before pooling, a trip had exactly one request (unique `requestId`). Drop that
+  // index if an older database still has it.
+  await c.trips.dropIndex("requestId_unique").catch(() => undefined);
+
   await Promise.all([
     c.users.createIndexes([
       { key: { email: 1 }, name: "email_unique", unique: true },
@@ -71,8 +75,8 @@ export async function ensureDatabase(db: Db): Promise<void> {
       // Person history: "which trips included this person?"
       { key: { "passengers.nameKey": 1, scheduledAt: -1 }, name: "passenger_nameKey_scheduledAt" },
       { key: { "passengers.userId": 1, scheduledAt: -1 }, name: "passenger_userId_scheduledAt" },
-      // One trip per request, ever.
-      { key: { requestId: 1 }, name: "requestId_unique", unique: true },
+      // Which run is a request on? (a run can carry several requests)
+      { key: { "requests.requestId": 1 }, name: "requests_requestId" },
       // Hard database guarantee: the Toto can be physically on only one trip at a time.
       {
         key: { vehicleId: 1 },

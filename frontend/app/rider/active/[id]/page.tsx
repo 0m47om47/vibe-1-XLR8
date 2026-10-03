@@ -12,6 +12,7 @@ import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import RouteVisualization from '@/components/rides/RouteVisualization';
 import PassengerRow from '@/components/rides/PassengerRow';
+import { SeatMeter } from '@/components/rides/TotoSchedule';
 import { ErrorState, PageLoader } from '@/components/ui/PageState';
 import { formatRoute, formatDateFull, formatDayLabel, formatStamp, formatTime, shortId } from '@/lib/utils';
 import { ArrowLeft, ArrowRight, Check, Users, UserCheck, UserX, AlertCircle } from 'lucide-react';
@@ -141,7 +142,9 @@ function ActiveTrip() {
         {formatRoute(trip.from, trip.to)}
       </h1>
       <p className="text-xs sm:text-sm text-gray-500 mb-6 sm:mb-8">
-        {formatTime(trip.scheduledAt)} • {formatDayLabel(trip.scheduledAt)} · {formatDateFull(trip.scheduledAt)}
+        {formatTime(trip.scheduledAt)} → arrives {trip.to} ~{formatTime(trip.endsAt)} • {formatDayLabel(trip.scheduledAt)} ·{' '}
+        {formatDateFull(trip.scheduledAt)}
+        {trip.requests.length > 1 && <> • Shared run · {trip.requests.length} requests</>}
       </p>
 
       {trip.status === 'ACCEPTED' && (
@@ -202,6 +205,7 @@ function ActiveTrip() {
                   key={p.id}
                   passenger={p}
                   index={i}
+                  subtitle={trip.requests.length > 1 ? `Booked by ${p.requesterName}` : undefined}
                   showControls={inProgress}
                   busy={busyPassenger === p.id}
                   disabled={busyPassenger !== null || working}
@@ -238,6 +242,7 @@ function ActiveTrip() {
               <SummaryLine icon={<UserX className="w-4 h-4 text-red-600" />} tint="bg-red-50" label="Missed" value={missedCount} color="text-red-600" />
               <div className="h-px bg-gray-100" />
               <SummaryLine icon={<Users className="w-4 h-4 text-gray-500" />} tint="bg-gray-50" label="Total" value={trip.passengers.length} color="text-gray-900" />
+              <SeatMeter seats={trip.seats} className="pt-1" />
             </div>
           </div>
 
@@ -246,7 +251,11 @@ function ActiveTrip() {
             <h3 className="text-base font-semibold text-gray-900 mb-4">Trip Info</h3>
             <div className="space-y-3 text-sm">
               <InfoLine label="Trip ID" value={`#${shortId(trip.id)}`} />
-              <InfoLine label="Requested by" value={trip.requester.name} />
+              <InfoLine
+                label={trip.requests.length > 1 ? `Requests (${trip.requests.length})` : 'Requested by'}
+                value={trip.requests.map((r) => `${r.requesterName} (${r.passengerCount})`).join(', ')}
+              />
+              <InfoLine label="Arrives" value={`${trip.to}, ~${formatTime(trip.endsAt)}`} />
               <InfoLine label="Rider" value={trip.rider.name} />
               <InfoLine label="Accepted" value={formatStamp(trip.acceptedAt)} />
               {trip.startedAt && <InfoLine label="Started" value={formatStamp(trip.startedAt)} />}
