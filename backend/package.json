@@ -1,27 +1,21 @@
 {
   "name": "lawazia-toto-backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Lawazia Toto Ride Management System - API (Next.js Route Handlers + MongoDB)",
+  "description": "Lawazia Toto Ride Management System - API (Node.js + Express + MongoDB)",
+  "main": "server.js",
   "scripts": {
-    "dev": "next dev -p 4000",
-    "build": "next build",
-    "start": "next start -p 4000",
-    "typecheck": "tsc --noEmit",
-    "seed": "tsx --env-file-if-exists=.env.local scripts/seed.ts",
-    "test:api": "tsx scripts/api-test.ts"
+    "dev": "node --watch --env-file-if-exists=.env.local server.js",
+    "start": "node server.js",
+    "seed": "node --env-file-if-exists=.env.local scripts/seed.js",
+    "test:api": "node scripts/api-test.js"
   },
   "dependencies": {
-    "mongodb": "^7.0.0",
-    "next": "^16.3.8",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "mongodb": "^7.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "@types/react": "^19.2.0",
-    "mongodb-memory-server": "^11.3.0",
-    "tsx": "^4.23.0",
-    "typescript": "^5.9.3"
+    "mongodb-memory-server": "^11.3.0"
   }
 }
