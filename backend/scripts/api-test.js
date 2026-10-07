@@ -611,54 +611,6 @@ async function run(mongoUri, dbName) {
     check("a CLASHED request cannot be cancelled → 409", cancelClashed.status === 409, cancelClashed);
   }
 
-  // -------------------------------------------------------------- Admin
-  section("Admin dashboard & role requests");
-  {
-    const admin = new Client("admin");
-    await admin.login("admin@lawazia.test");
-
-    const dash = await admin.get("/api/admin");
-    check(
-      "admin dashboard has userCounts, tripCounts, vehicle",
-      dash.status === 200 && typeof dash.body.data.userCounts.total === "number" && dash.body.data.vehicle,
-      dash.body,
-    );
-
-    const asStudent = await rahul.get("/api/admin");
-    check("non-admin cannot read admin dashboard → 403", asStudent.status === 403, asStudent);
-
-    const users = await admin.get("/api/admin/users");
-    check("admin lists users with trip counts", users.status === 200 && Array.isArray(users.body.data) && users.body.data.length > 0, users);
-    const noHash = !JSON.stringify(users.body).includes("passwordHash");
-    check("admin user list never contains a password hash", noHash);
-
-    const pendingRR = await admin.get("/api/admin/role-requests?status=PENDING");
-    const rahulRR = pendingRR.body.data.find((r) => r.userName === "Rahul");
-    check("seeded pending role request (Rahul → EMPLOYEE) is listed", !!rahulRR, pendingRR.body);
-
-    const approve = await admin.patch(`/api/admin/role-requests/${rahulRR.id}`, { action: "approve" });
-    check("admin approves a role request → 200", approve.status === 200 && approve.body.data.request.status === "APPROVED", approve);
-
-    const rahulAfter = await rahul.get("/api/auth/me");
-    check("the user's role actually changed after approval", rahulAfter.body.data.user.role === "EMPLOYEE", rahulAfter.body);
-
-    const riders = await admin.get("/api/admin/riders");
-    check("admin lists riders with stats", riders.status === 200 && riders.body.data.some((r) => r.user.name === "Ravi Kumar"), riders.body);
-
-    const analytics = await admin.get("/api/admin/analytics");
-    check(
-      "admin analytics has tripsToday/boardedRate",
-      analytics.status === 200 && typeof analytics.body.data.boardedRate === "number",
-      analytics.body,
-    );
-
-    const roleChange = await admin.patch(`/api/admin/users/${rahulAfter.body.data.user.id}`, { role: "STUDENT" });
-    check("admin can set a user's role directly", roleChange.status === 200 && roleChange.body.data.user.role === "STUDENT", roleChange);
-
-    const suspend = await admin.patch(`/api/admin/users/${rahulAfter.body.data.user.id}`, { accountStatus: "SUSPENDED" });
-    check("admin can suspend a user", suspend.status === 200 && suspend.body.data.user.accountStatus === "SUSPENDED", suspend);
-  }
-
   // -------------------------------------------------------------- dashboards & misc
   section("Dashboards & error format");
   {

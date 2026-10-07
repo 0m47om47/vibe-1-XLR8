@@ -10,8 +10,6 @@ const historyRoutes = require("./routes/history");
 const dashboardRoutes = require("./routes/dashboard");
 const metaRoutes = require("./routes/meta");
 const healthRoutes = require("./routes/health");
-const roleRequestRoutes = require("./routes/roleRequests");
-const adminRoutes = require("./routes/admin");
 
 const app = express();
 
@@ -35,8 +33,6 @@ app.use("/api/history", historyRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/meta", metaRoutes);
 app.use("/api/health", healthRoutes);
-app.use("/api/role-requests", roleRequestRoutes);
-app.use("/api/admin", adminRoutes);
 
 // Unmatched /api/* routes → a consistent 404 JSON response.
 app.use("/api", (req, res) => {
